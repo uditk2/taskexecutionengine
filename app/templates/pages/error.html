@@ -1,0 +1,20 @@
+{% extends "layouts/default.html" %}
+
+{% block title %}Error - {{ settings.PROJECT_NAME }}{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body text-center">
+                    <i class="fas fa-exclamation-triangle fa-3x text-danger mb-3"></i>
+                    <h3 class="card-title">Error</h3>
+                    <p class="card-text">{{ error_message }}</p>
+                    <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

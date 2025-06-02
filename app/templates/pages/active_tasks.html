@@ -1,0 +1,337 @@
+{% extends "layouts/dashboard.html" %}
+
+{% block title %}Active Tasks Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h1 class="h3 mb-2">Active Tasks Dashboard</h1>
+                <button class="btn btn-primary" onclick="showCreateWorkflowModal()">
+                    <i class="fas fa-plus"></i> Create New Workflow
+                </button>
+            </div>
+            <p class="text-muted">
+                Monitoring {{ active_tasks|length }} active tasks across {{ active_workflows|length }} workflows
+            </p>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-primary text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Total Tasks</div>
+                            <div class="h4" id="total-tasks">{{ task_stats.get('pending', 0) + task_stats.get('running', 0) + task_stats.get('completed', 0) + task_stats.get('failed', 0) }}</div>
+                        </div>
+                        <i class="fas fa-tasks fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-warning text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Pending</div>
+                            <div class="h4" id="pending-tasks">{{ task_stats.get('pending', 0) }}</div>
+                        </div>
+                        <i class="fas fa-clock fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-success text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Running</div>
+                            <div class="h4" id="running-tasks">{{ task_stats.get('running', 0) }}</div>
+                        </div>
+                        <i class="fas fa-play fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-info text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Active Workflows</div>
+                            <div class="h4" id="active-workflows">{{ workflow_stats.get('pending', 0) + workflow_stats.get('running', 0) }}</div>
+                        </div>
+                        <i class="fas fa-project-diagram fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Workflows -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Active Workflows</h5>
+                    <span class="badge bg-primary">{{ active_workflows|length }}</span>
+                </div>
+                <div class="card-body">
+                    {% if active_workflows %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Tasks</th>
+                                    <th>Progress</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="active-workflows-table">
+                                {% for workflow in active_workflows %}
+                                <tr data-workflow-id="{{ workflow.id }}">
+                                    <td>{{ workflow.id }}</td>
+                                    <td>
+                                        <a href="/dashboard/workflow/{{ workflow.id }}">{{ workflow.name }}</a>
+                                    </td>
+                                    <td>
+                                        <span class="badge {{ 'bg-warning' if workflow.status == 'pending' else 'bg-success' if workflow.status == 'running' else 'bg-secondary' }}">
+                                            {{ workflow.status.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ workflow.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>
+                                        <span class="badge bg-secondary">{{ workflow.tasks|length }}</span>
+                                    </td>
+                                    <td>
+                                        {% set completed_tasks = workflow.tasks|selectattr('status', 'equalto', 'completed')|list|length %}
+                                        {% set total_tasks = workflow.tasks|length %}
+                                        {% set progress = (completed_tasks / total_tasks * 100) if total_tasks else 0 %}
+                                        <div class="progress">
+                                            <div class="progress-bar" role="progressbar" style="width: {{ progress }}%;" 
+                                                 aria-valuenow="{{ progress }}" aria-valuemin="0" aria-valuemax="100">
+                                                {{ completed_tasks }}/{{ total_tasks }}
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="btn-group">
+                                            <a href="/dashboard/workflow/{{ workflow.id }}" class="btn btn-sm btn-outline-primary">
+                                                View
+                                            </a>
+                                            {% if workflow.status == 'pending' %}
+                                            <button class="btn btn-sm btn-success execute-btn" data-workflow-id="{{ workflow.id }}">
+                                                Execute
+                                            </button>
+                                            {% elif workflow.status == 'running' %}
+                                            <button class="btn btn-sm btn-warning cancel-btn" data-workflow-id="{{ workflow.id }}">
+                                                Cancel
+                                            </button>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">
+                        No active workflows found. <a href="#" onclick="showCreateWorkflowModal()">Create a new workflow</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Tasks -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Active Tasks</h5>
+                    <span class="badge bg-primary">{{ active_tasks|length }}</span>
+                </div>
+                <div class="card-body">
+                    {% if active_tasks %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Name</th>
+                                    <th>Workflow</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Started</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="active-tasks-table">
+                                {% for task in active_tasks %}
+                                <tr data-task-id="{{ task.id }}">
+                                    <td>{{ task.id }}</td>
+                                    <td>{{ task.name }}</td>
+                                    <td>
+                                        <a href="/dashboard/workflow/{{ task.workflow.id }}">{{ task.workflow.name }}</a>
+                                    </td>
+                                    <td>
+                                        <span class="badge {{ 'bg-warning' if task.status == 'pending' else 'bg-success' if task.status == 'running' else 'bg-secondary' }}">
+                                            {{ task.status.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>{{ task.started_at.strftime('%Y-%m-%d %H:%M') if task.started_at else 'N/A' }}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-info view-task-btn" data-task-id="{{ task.id }}" data-workflow-id="{{ task.workflow.id }}">
+                                            View
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">
+                        No active tasks found. <a href="#" onclick="showCreateWorkflowModal()">Create a new workflow</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Task Detail Modal -->
+<div class="modal fade" id="taskModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="taskModalTitle">Task Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="taskModalBody">
+                <!-- Task details will be loaded here -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let pollInterval = {{ poll_interval }} * 1000;
+
+function updateDashboard() {
+    fetch('/dashboard/api/stats')
+        .then(response => response.json())
+        .then(data => {
+            // Update task stats
+            const taskStats = data.task_stats;
+            document.getElementById('total-tasks').textContent = 
+                (taskStats.pending || 0) + (taskStats.running || 0) + (taskStats.completed || 0) + (taskStats.failed || 0);
+            document.getElementById('pending-tasks').textContent = taskStats.pending || 0;
+            document.getElementById('running-tasks').textContent = taskStats.running || 0;
+            
+            // Update workflow stats
+            const workflowStats = data.workflow_stats;
+            document.getElementById('active-workflows').textContent = 
+                (workflowStats.pending || 0) + (workflowStats.running || 0);
+        })
+        .catch(error => console.error('Error updating dashboard stats:', error));
+
+    // Reload the page every 5 poll intervals to get fresh data
+    // This ensures we get up-to-date list of tasks without implementing
+    // complex partial updates via JavaScript
+    setTimeout(() => {
+        location.reload();
+    }, pollInterval * 5);
+}
+
+// Execute workflow
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('execute-btn')) {
+        const workflowId = e.target.dataset.workflowId;
+        fetch(`/api/v1/workflows/${workflowId}/execute`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow execution started');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error executing workflow:', error);
+            alert('Error executing workflow');
+        });
+    }
+    
+    if (e.target.classList.contains('cancel-btn')) {
+        const workflowId = e.target.dataset.workflowId;
+        fetch(`/api/v1/workflows/${workflowId}/cancel`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow cancelled');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error cancelling workflow:', error);
+            alert('Error cancelling workflow');
+        });
+    }
+    
+    if (e.target.classList.contains('view-task-btn')) {
+        const taskId = e.target.dataset.taskId;
+        const workflowId = e.target.dataset.workflowId;
+        
+        fetch(`/api/v1/workflows/${workflowId}`)
+            .then(response => response.json())
+            .then(data => {
+                const task = data.tasks.find(t => t.id == taskId);
+                if (task) {
+                    document.getElementById('taskModalTitle').textContent = `Task: ${task.name}`;
+                    document.getElementById('taskModalBody').innerHTML = `
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Task Information</h6>
+                                <table class="table table-sm">
+                                    <tr><td><strong>Name:</strong></td><td>${task.name}</td></tr>
+                                    <tr><td><strong>Description:</strong></td><td>${task.description || 'N/A'}</td></tr>
+                                    <tr><td><strong>Status:</strong></td><td><span class="badge bg-${task.status === 'pending' ? 'warning' : task.status === 'running' ? 'success' : 'secondary'}">${task.status}</span></td></tr>
+                                    <tr><td><strong>Order:</strong></td><td>${task.order}</td></tr>
+                                    <tr><td><strong>Requirements:</strong></td><td>${task.requirements.join(', ') || 'None'}</td></tr>
+                                </table>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Script Content</h6>
+                                <pre class="bg-light p-2" style="max-height: 200px; overflow-y: auto;"><code>${task.script_content}</code></pre>
+                                ${task.output ? `<h6>Output</h6><pre class="bg-light p-2" style="max-height: 200px; overflow-y: auto;"><code>${task.output}</code></pre>` : ''}
+                                ${task.error_message ? `<h6>Error</h6><pre class="bg-danger text-white p-2" style="max-height: 200px; overflow-y: auto;"><code>${task.error_message}</code></pre>` : ''}
+                            </div>
+                        </div>
+                    `;
+                    new bootstrap.Modal(document.getElementById('taskModal')).show();
+                }
+            });
+    }
+});
+
+// Start polling
+setInterval(updateDashboard, pollInterval);
+
+// Initial update
+updateDashboard();
+</script>
+{% endblock %}

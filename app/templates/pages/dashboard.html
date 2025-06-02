@@ -1,0 +1,178 @@
+{% extends "layouts/dashboard.html" %}
+
+{% block title %}Task Execution Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="h3 mb-3">Task Execution Dashboard</h1>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-primary text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Total Workflows</div>
+                            <div class="h4" id="total-workflows">{{ stats.get('pending', 0) + stats.get('running', 0) + stats.get('completed', 0) + stats.get('failed', 0) + stats.get('cancelled', 0) }}</div>
+                        </div>
+                        <i class="fas fa-project-diagram fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-success text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Running</div>
+                            <div class="h4" id="running-workflows">{{ stats.get('running', 0) }}</div>
+                        </div>
+                        <i class="fas fa-play fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-info text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Completed</div>
+                            <div class="h4" id="completed-workflows">{{ stats.get('completed', 0) }}</div>
+                        </div>
+                        <i class="fas fa-check fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-danger text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <div class="small text-white-50">Failed</div>
+                            <div class="h4" id="failed-workflows">{{ stats.get('failed', 0) }}</div>
+                        </div>
+                        <i class="fas fa-times fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Workflows -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Recent Workflows</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped" id="workflows-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                    <th>Tasks</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for workflow in recent_workflows %}
+                                <tr data-workflow-id="{{ workflow.id }}">
+                                    <td>{{ workflow.id }}</td>
+                                    <td>{{ workflow.name }}</td>
+                                    <td>
+                                        <span class="badge badge-{{ 'success' if workflow.status == 'completed' else 'primary' if workflow.status == 'running' else 'danger' if workflow.status == 'failed' else 'warning' if workflow.status == 'pending' else 'secondary' }}">
+                                            {{ workflow.status.title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ workflow.tasks|length }}</td>
+                                    <td>{{ workflow.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    <td>
+                                        <a href="/dashboard/workflow/{{ workflow.id }}" class="btn btn-sm btn-outline-primary">View</a>
+                                        {% if workflow.status == 'pending' %}
+                                        <button class="btn btn-sm btn-success execute-btn" data-workflow-id="{{ workflow.id }}">Execute</button>
+                                        {% elif workflow.status == 'running' %}
+                                        <button class="btn btn-sm btn-warning cancel-btn" data-workflow-id="{{ workflow.id }}">Cancel</button>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Auto-refresh functionality
+let pollInterval = {{ poll_interval }} * 1000; // Convert to milliseconds
+
+function updateDashboard() {
+    fetch('/dashboard/api/stats')
+        .then(response => response.json())
+        .then(data => {
+            // Update workflow stats
+            const workflowStats = data.workflow_stats;
+            const total = Object.values(workflowStats).reduce((a, b) => a + b, 0);
+            
+            document.getElementById('total-workflows').textContent = total;
+            document.getElementById('running-workflows').textContent = workflowStats.running || 0;
+            document.getElementById('completed-workflows').textContent = workflowStats.completed || 0;
+            document.getElementById('failed-workflows').textContent = workflowStats.failed || 0;
+        })
+        .catch(error => console.error('Error updating dashboard:', error));
+}
+
+// Execute workflow
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('execute-btn')) {
+        const workflowId = e.target.dataset.workflowId;
+        fetch(`/api/v1/workflows/${workflowId}/execute`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow execution started');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error executing workflow:', error);
+            alert('Error executing workflow');
+        });
+    }
+    
+    if (e.target.classList.contains('cancel-btn')) {
+        const workflowId = e.target.dataset.workflowId;
+        fetch(`/api/v1/workflows/${workflowId}/cancel`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow cancelled');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error cancelling workflow:', error);
+            alert('Error cancelling workflow');
+        });
+    }
+});
+
+// Start polling
+setInterval(updateDashboard, pollInterval);
+</script>
+{% endblock %}

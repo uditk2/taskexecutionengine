@@ -1,0 +1,39 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Install system dependencies including python3-venv and Docker CLI
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    python3-dev \
+    libc-dev \
+    python3-venv \
+    curl \
+    && curl -fsSL https://get.docker.com -o get-docker.sh \
+    && sh get-docker.sh \
+    && rm get-docker.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create directories
+RUN mkdir -p /app/logs /tmp/task_venvs && \
+    chmod 777 /app/logs /tmp/task_venvs
+
+# Create non-root user
+RUN useradd -m appuser && chown -R appuser:appuser /app /tmp/task_venvs
+USER appuser
+
+# Run Celery worker
+CMD ["celery", "-A", "app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
