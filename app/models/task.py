@@ -31,6 +31,7 @@ class Task(Base):
     celery_task_id = Column(String(255), nullable=True, index=True)
     output = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
+    task_outputs = Column(JSON, default=dict)  # Structured outputs for data pipeline
     
     # Relationship to workflow
     workflow = relationship("Workflow", back_populates="tasks")

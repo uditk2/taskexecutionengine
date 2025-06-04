@@ -138,6 +138,11 @@
                                                 Cancel
                                             </button>
                                             {% endif %}
+                                            {% if workflow.status != 'running' %}
+                                            <button class="btn btn-sm btn-danger delete-btn" data-workflow-id="{{ workflow.id }}" data-workflow-name="{{ workflow.name }}">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                            {% endif %}
                                         </div>
                                     </td>
                                 </tr>
@@ -325,6 +330,26 @@ document.addEventListener('click', function(e) {
                     new bootstrap.Modal(document.getElementById('taskModal')).show();
                 }
             });
+    }
+    
+    if (e.target.classList.contains('delete-btn')) {
+        const workflowId = e.target.dataset.workflowId;
+        const workflowName = e.target.dataset.workflowName;
+        
+        if (confirm(`Are you sure you want to delete the workflow "${workflowName}"? This action cannot be undone.`)) {
+            fetch(`/api/v1/workflows/${workflowId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert('Workflow deleted');
+                location.reload();
+            })
+            .catch(error => {
+                console.error('Error deleting workflow:', error);
+                alert('Error deleting workflow');
+            });
+        }
     }
 });
 

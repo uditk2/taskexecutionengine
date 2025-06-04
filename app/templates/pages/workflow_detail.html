@@ -10,10 +10,27 @@
                 <h1 class="h3">Workflow: {{ workflow.name }}</h1>
                 <div>
                     <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                    {% if workflow.is_scheduled %}
+                    <button class="btn btn-info" id="schedule-info-btn">
+                        <i class="fas fa-calendar-check"></i> Scheduled
+                    </button>
+                    <button class="btn btn-warning" id="unschedule-btn">
+                        <i class="fas fa-calendar-times"></i> Unschedule
+                    </button>
+                    {% else %}
+                    <button class="btn btn-outline-primary" id="schedule-btn">
+                        <i class="fas fa-calendar-plus"></i> Schedule
+                    </button>
+                    {% endif %}
                     {% if workflow.status == 'pending' %}
                     <button class="btn btn-success" id="execute-btn">Execute</button>
                     {% elif workflow.status == 'running' %}
                     <button class="btn btn-warning" id="cancel-btn">Cancel</button>
+                    {% endif %}
+                    {% if workflow.status != 'running' %}
+                    <button class="btn btn-danger" id="delete-btn" data-workflow-name="{{ workflow.name }}">
+                        <i class="fas fa-trash"></i> Delete Workflow
+                    </button>
                     {% endif %}
                 </div>
             </div>
@@ -151,6 +168,77 @@
     </div>
 </div>
 
+<!-- Schedule Workflow Modal -->
+<div class="modal fade" id="scheduleModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Schedule Workflow</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="scheduleForm">
+                    <div class="mb-3">
+                        <label for="cronExpression" class="form-label">Cron Expression</label>
+                        <input type="text" class="form-control" id="cronExpression" name="cron_expression" required 
+                               placeholder="0 9 * * 1-5" value="0 9 * * 1-5">
+                        <div class="form-text">Format: minute hour day month day_of_week</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="timezone" class="form-label">Timezone</label>
+                        <select class="form-control" id="timezone" name="timezone">
+                            <option value="UTC">UTC</option>
+                            <option value="America/New_York">America/New_York</option>
+                            <option value="America/Chicago">America/Chicago</option>
+                            <option value="America/Denver">America/Denver</option>
+                            <option value="America/Los_Angeles">America/Los_Angeles</option>
+                            <option value="Europe/London">Europe/London</option>
+                            <option value="Europe/Paris">Europe/Paris</option>
+                            <option value="Asia/Tokyo">Asia/Tokyo</option>
+                            <option value="Asia/Shanghai">Asia/Shanghai</option>
+                            <option value="Australia/Sydney">Australia/Sydney</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Quick Templates</label>
+                        <div class="btn-group d-block" role="group">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCron('0 * * * *')">Hourly</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCron('0 9 * * *')">Daily 9AM</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCron('0 9 * * 1-5')">Weekdays 9AM</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCron('0 9 * * 1')">Weekly Mon 9AM</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCron('0 9 1 * *')">Monthly 1st 9AM</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="saveScheduleBtn">Schedule Workflow</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Schedule Info Modal -->
+<div class="modal fade" id="scheduleInfoModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Schedule Information</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="scheduleInfoBody">
+                <!-- Schedule info will be loaded here -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 let pollInterval = {{ poll_interval }} * 1000;
 const workflowId = {{ workflow.id }};
@@ -263,6 +351,106 @@ document.addEventListener('click', function(e) {
             });
     }
 });
+
+// Schedule workflow
+document.getElementById('schedule-btn')?.addEventListener('click', function() {
+    new bootstrap.Modal(document.getElementById('scheduleModal')).show();
+});
+
+// Save schedule
+document.getElementById('saveScheduleBtn')?.addEventListener('click', function() {
+    const form = document.getElementById('scheduleForm');
+    if (form.checkValidity()) {
+        const formData = new FormData(form);
+        const cronExpression = formData.get('cron_expression');
+        const timezone = formData.get('timezone');
+        
+        fetch(`/api/v1/workflows/${workflowId}/schedule`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                cron_expression: cronExpression,
+                timezone: timezone
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow scheduled successfully');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error scheduling workflow:', error);
+            alert('Error scheduling workflow');
+        });
+    } else {
+        form.classList.add('was-validated');
+    }
+});
+
+// Unschedule workflow
+document.getElementById('unschedule-btn')?.addEventListener('click', function() {
+    if (confirm('Are you sure you want to unschedule this workflow?')) {
+        fetch(`/api/v1/workflows/${workflowId}/schedule`, {
+            method: 'DELETE'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow unscheduled');
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Error unscheduling workflow:', error);
+            alert('Error unscheduling workflow');
+        });
+    }
+});
+
+// Show schedule info
+document.getElementById('schedule-info-btn')?.addEventListener('click', function() {
+    fetch(`/api/v1/workflows/${workflowId}/schedule`)
+        .then(response => response.json())
+        .then(data => {
+            const scheduleInfoBody = document.getElementById('scheduleInfoBody');
+            scheduleInfoBody.innerHTML = `
+                <p><strong>Cron Expression:</strong> ${data.cron_expression}</p>
+                <p><strong>Timezone:</strong> ${data.timezone}</p>
+                <p><strong>Next Run:</strong> ${data.next_run_at ? new Date(data.next_run_at).toLocaleString() : 'N/A'}</p>
+                <p><strong>Last Run:</strong> ${data.last_run_at ? new Date(data.last_run_at).toLocaleString() : 'Never'}</p>
+                <p><strong>Run Count:</strong> ${data.run_count}</p>
+            `;
+            new bootstrap.Modal(document.getElementById('scheduleInfoModal')).show();
+        })
+        .catch(error => {
+            console.error('Error fetching schedule info:', error);
+            alert('Error fetching schedule info');
+        });
+});
+
+// Delete workflow
+document.getElementById('delete-btn')?.addEventListener('click', function() {
+    const workflowName = this.dataset.workflowName;
+    if (confirm(`Are you sure you want to delete the workflow "${workflowName}"? This action cannot be undone.`)) {
+        fetch(`/api/v1/workflows/${workflowId}`, {
+            method: 'DELETE'
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert('Workflow deleted successfully');
+            location.href = '/dashboard';
+        })
+        .catch(error => {
+            console.error('Error deleting workflow:', error);
+            alert('Error deleting workflow');
+        });
+    }
+});
+
+// Helper function for cron templates
+function setCron(cronExpr) {
+    document.getElementById('cronExpression').value = cronExpr;
+}
 
 // Start polling
 setInterval(updateWorkflowStatus, pollInterval);

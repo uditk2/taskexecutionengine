@@ -39,6 +39,7 @@ redis
 celery==5.3.4
 kombu==5.3.4
 redis==5.0.1
+croniter==1.4.1
 
 # Database
 sqlalchemy==2.0.23

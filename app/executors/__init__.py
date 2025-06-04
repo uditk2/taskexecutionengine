@@ -11,6 +11,7 @@ class ExecutionResult:
     error_message: Optional[str] = None
     execution_time: Optional[float] = None
     exit_code: Optional[int] = None
+    task_outputs: Optional[Dict[str, Any]] = None  # Structured outputs for data pipeline
 
 
 class TaskExecutor(ABC):
@@ -71,3 +72,8 @@ class ExecutorFactory:
     def list_executors(cls) -> List[str]:
         """List available executor names"""
         return list(cls._executors.keys())
+
+
+# Import executor modules to register them
+from . import venv_executor
+from . import docker_executor

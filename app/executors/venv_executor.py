@@ -4,6 +4,8 @@ import tempfile
 import shutil
 import venv
 import time
+import json
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -32,6 +34,7 @@ class VirtualEnvExecutor(TaskExecutor):
     ) -> ExecutionResult:
         """Execute script in isolated virtual environment"""
         start_time = time.time()
+        previous_outputs = kwargs.get('previous_outputs', [])
         
         try:
             # Create unique virtual environment
@@ -66,9 +69,12 @@ class VirtualEnvExecutor(TaskExecutor):
                             execution_time=time.time() - start_time
                         )
             
+            # Prepare enhanced script with data pipeline support
+            enhanced_script = self._prepare_script_with_pipeline_support(script_content, previous_outputs)
+            
             # Create temporary script file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as script_file:
-                script_file.write(script_content)
+                script_file.write(enhanced_script)
                 script_path = script_file.name
             
             try:
@@ -83,12 +89,16 @@ class VirtualEnvExecutor(TaskExecutor):
                 
                 execution_time = time.time() - start_time
                 
+                # Extract task outputs from script output
+                task_outputs = self._extract_task_outputs(result.stdout)
+                
                 if result.returncode == 0:
                     return ExecutionResult(
                         success=True,
                         output=result.stdout,
                         execution_time=execution_time,
-                        exit_code=result.returncode
+                        exit_code=result.returncode,
+                        task_outputs=task_outputs
                     )
                 else:
                     return ExecutionResult(
@@ -96,7 +106,8 @@ class VirtualEnvExecutor(TaskExecutor):
                         output=result.stdout,
                         error_message=result.stderr,
                         execution_time=execution_time,
-                        exit_code=result.returncode
+                        exit_code=result.returncode,
+                        task_outputs=task_outputs
                     )
             finally:
                 os.unlink(script_path)
@@ -115,6 +126,44 @@ class VirtualEnvExecutor(TaskExecutor):
                 error_message=f"Execution failed: {str(e)}",
                 execution_time=time.time() - start_time
             )
+    
+    def _prepare_script_with_pipeline_support(self, script_content: str, previous_outputs: List[dict]) -> str:
+        """Prepare script with data pipeline support"""
+        # Read the pipeline support script
+        pipeline_script_path = Path(__file__).parent / "pipeline_support.py"
+        
+        try:
+            with open(pipeline_script_path, 'r') as f:
+                pipeline_support = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Pipeline support script not found at {pipeline_script_path}")
+        
+        # Inject the previous outputs data
+        pipeline_setup = f"""# === Data Pipeline Support ===
+{pipeline_support}
+
+# Inject previous task outputs
+PREVIOUS_OUTPUTS = {json.dumps(previous_outputs)}
+
+# === User Script ===
+"""
+        
+        return pipeline_setup + script_content
+    
+    def _extract_task_outputs(self, stdout: str) -> dict:
+        """Extract structured task outputs from stdout"""
+        try:
+            # Look for the special output markers
+            pattern = r'__TASK_OUTPUTS_START__(.+?)__TASK_OUTPUTS_END__'
+            matches = re.findall(pattern, stdout, re.DOTALL)
+            
+            if matches:
+                # Get the last output (in case multiple calls)
+                return json.loads(matches[-1])
+            
+            return {}
+        except (json.JSONDecodeError, IndexError):
+            return {}
     
     def cleanup(self) -> None:
         """Clean up virtual environment"""

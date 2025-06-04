@@ -36,6 +36,7 @@ class TaskResponse(TaskBase):
     celery_task_id: Optional[str] = None
     output: Optional[str] = None
     error_message: Optional[str] = None
+    task_outputs: Optional[dict] = None
 
     class Config:
         from_attributes = True

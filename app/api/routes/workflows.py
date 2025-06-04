@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from datetime import datetime
 from app.core.database import get_db
 from app.models.workflow import Workflow, WorkflowStatus
 from app.models.task import Task
@@ -193,7 +194,136 @@ async def get_workflow_status(workflow_id: int, db: AsyncSession = Depends(get_d
                 "status": task.status,
                 "started_at": task.started_at,
                 "completed_at": task.completed_at,
-                "error_message": task.error_message
+                "error_message": task.error_message,
+                "task_outputs": task.task_outputs or {}
             } for task in sorted(workflow.tasks, key=lambda t: t.order)
         ]
     }
+
+
+@router.post("/{workflow_id}/schedule")
+async def schedule_workflow(
+    workflow_id: int,
+    schedule_data: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """Enable scheduling for a workflow"""
+    cron_expression = schedule_data.get("cron_expression")
+    timezone = schedule_data.get("timezone", "UTC")
+    
+    # Validate cron expression
+    if not cron_expression:
+        raise HTTPException(status_code=400, detail="Cron expression is required")
+    
+    cron_parts = cron_expression.split()
+    if len(cron_parts) != 5:
+        raise HTTPException(
+            status_code=400, 
+            detail="Cron expression must have 5 parts (minute hour day month day_of_week)"
+        )
+    
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    workflow = result.scalar_one_or_none()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    
+    # Calculate next run time
+    try:
+        from croniter import croniter
+        import pytz
+        
+        tz = pytz.timezone(timezone)
+        cron = croniter(cron_expression, datetime.now(tz))
+        next_run = cron.get_next(datetime)
+        
+        # Update workflow with scheduling info
+        workflow.is_scheduled = True
+        workflow.cron_expression = cron_expression
+        workflow.timezone = timezone
+        workflow.next_run_at = next_run
+        
+        await db.commit()
+        
+        # Register with Celery Beat
+        await register_workflow_schedule(workflow)
+        
+        return {
+            "message": "Workflow scheduled successfully",
+            "cron_expression": cron_expression,
+            "timezone": timezone,
+            "next_run_at": next_run
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid cron expression or timezone: {str(e)}")
+
+
+@router.delete("/{workflow_id}/schedule")
+async def unschedule_workflow(workflow_id: int, db: AsyncSession = Depends(get_db)):
+    """Disable scheduling for a workflow"""
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    workflow = result.scalar_one_or_none()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    
+    if not workflow.is_scheduled:
+        raise HTTPException(status_code=400, detail="Workflow is not scheduled")
+    
+    # Remove from Celery Beat
+    await unregister_workflow_schedule(workflow)
+    
+    # Update workflow
+    workflow.is_scheduled = False
+    workflow.cron_expression = None
+    workflow.next_run_at = None
+    
+    await db.commit()
+    
+    return {"message": "Workflow unscheduled successfully"}
+
+
+@router.get("/{workflow_id}/schedule")
+async def get_workflow_schedule(workflow_id: int, db: AsyncSession = Depends(get_db)):
+    """Get scheduling information for a workflow"""
+    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    workflow = result.scalar_one_or_none()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    
+    return {
+        "workflow_id": workflow.id,
+        "is_scheduled": workflow.is_scheduled,
+        "cron_expression": workflow.cron_expression,
+        "timezone": workflow.timezone,
+        "next_run_at": workflow.next_run_at,
+        "last_run_at": workflow.last_run_at,
+        "run_count": workflow.run_count
+    }
+
+
+async def register_workflow_schedule(workflow: Workflow):
+    """Register a workflow with Celery Beat"""
+    if workflow.is_scheduled and workflow.cron_expression:
+        from celery.schedules import crontab
+        
+        task_name = f"scheduled_workflow_{workflow.id}"
+        cron_parts = workflow.cron_expression.split()
+        
+        celery_app.conf.beat_schedule[task_name] = {
+            'task': 'app.tasks.workflow_tasks.execute_scheduled_workflow',
+            'schedule': crontab(
+                minute=cron_parts[0],
+                hour=cron_parts[1],
+                day_of_month=cron_parts[2],
+                month_of_year=cron_parts[3],
+                day_of_week=cron_parts[4]
+            ),
+            'args': (workflow.id,),
+            'options': {'timezone': workflow.timezone}
+        }
+
+
+async def unregister_workflow_schedule(workflow: Workflow):
+    """Unregister a workflow from Celery Beat"""
+    task_name = f"scheduled_workflow_{workflow.id}"
+    if task_name in celery_app.conf.beat_schedule:
+        del celery_app.conf.beat_schedule[task_name]

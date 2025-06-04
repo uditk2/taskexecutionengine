@@ -129,6 +129,58 @@
                                 </label>
                             </div>
                         </div>
+                        
+                        <!-- Scheduling Section -->
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="enableScheduling">
+                                <label class="form-check-label" for="enableScheduling">
+                                    Enable Scheduling
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div id="schedulingOptions" style="display: none;" class="mb-3">
+                            <div class="card">
+                                <div class="card-body">
+                                    <h6 class="card-title">Schedule Settings</h6>
+                                    <div class="mb-3">
+                                        <label for="createCronExpression" class="form-label">Cron Expression</label>
+                                        <input type="text" class="form-control" id="createCronExpression" 
+                                               placeholder="0 9 * * 1-5" value="0 9 * * 1-5">
+                                        <div class="form-text">Format: minute hour day month day_of_week</div>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <label for="createTimezone" class="form-label">Timezone</label>
+                                        <select class="form-control" id="createTimezone">
+                                            <option value="UTC">UTC</option>
+                                            <option value="America/New_York">America/New_York</option>
+                                            <option value="America/Chicago">America/Chicago</option>
+                                            <option value="America/Denver">America/Denver</option>
+                                            <option value="America/Los_Angeles">America/Los_Angeles</option>
+                                            <option value="Europe/London">Europe/London</option>
+                                            <option value="Europe/Paris">Europe/Paris</option>
+                                            <option value="Asia/Tokyo">Asia/Tokyo</option>
+                                            <option value="Asia/Shanghai">Asia/Shanghai</option>
+                                            <option value="Australia/Sydney">Australia/Sydney</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Quick Templates</label>
+                                        <div class="btn-group d-block" role="group">
+                                            <button type="button" class="btn btn-outline-secondary btn-sm me-1" onclick="setCreateCron('0 * * * *')">Hourly</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm me-1" onclick="setCreateCron('0 9 * * *')">Daily 9AM</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm me-1" onclick="setCreateCron('0 9 * * 1-5')">Weekdays 9AM</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm me-1" onclick="setCreateCron('0 9 * * 1')">Weekly Mon 9AM</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="setCreateCron('0 9 1 * *')">Monthly 1st 9AM</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div class="mb-3">
                             <label class="form-label">Tasks</label>
                             <div id="tasksContainer">
@@ -179,6 +231,21 @@
             new bootstrap.Modal(document.getElementById('createWorkflowModal')).show();
         }
 
+        // Toggle scheduling options visibility
+        document.getElementById('enableScheduling').addEventListener('change', function() {
+            const schedulingOptions = document.getElementById('schedulingOptions');
+            if (this.checked) {
+                schedulingOptions.style.display = 'block';
+            } else {
+                schedulingOptions.style.display = 'none';
+            }
+        });
+
+        // Helper function for cron templates in create modal
+        function setCreateCron(cronExpr) {
+            document.getElementById('createCronExpression').value = cronExpr;
+        }
+
         function addTask() {
             const container = document.getElementById('tasksContainer');
             const taskCount = container.children.length;
@@ -222,45 +289,115 @@
             const name = document.getElementById('workflowName').value;
             const description = document.getElementById('workflowDescription').value;
             const executeImmediately = document.getElementById('executeImmediately').checked;
+            const enableScheduling = document.getElementById('enableScheduling').checked;
+            const cronExpression = document.getElementById('createCronExpression').value;
+            const timezone = document.getElementById('createTimezone').value;
+            
+            if (!name.trim()) {
+                alert('Please enter a workflow name');
+                return;
+            }
             
             const tasks = [];
+            let hasValidTasks = false;
             document.querySelectorAll('.task-item').forEach(taskItem => {
-                const requirements = taskItem.querySelector('.task-requirements').value
-                    .split('\n')
-                    .map(req => req.trim())
-                    .filter(req => req.length > 0);
+                const taskName = taskItem.querySelector('.task-name').value.trim();
+                const scriptContent = taskItem.querySelector('.task-script').value.trim();
                 
-                tasks.push({
-                    name: taskItem.querySelector('.task-name').value,
-                    description: taskItem.querySelector('.task-description').value,
-                    script_content: taskItem.querySelector('.task-script').value,
-                    requirements: requirements,
-                    order: parseInt(taskItem.querySelector('.task-order').value)
-                });
+                if (taskName && scriptContent) {
+                    hasValidTasks = true;
+                    const requirements = taskItem.querySelector('.task-requirements').value
+                        .split('\n')
+                        .map(req => req.trim())
+                        .filter(req => req.length > 0);
+                    
+                    tasks.push({
+                        name: taskName,
+                        description: taskItem.querySelector('.task-description').value,
+                        script_content: scriptContent,
+                        requirements: requirements,
+                        order: parseInt(taskItem.querySelector('.task-order').value)
+                    });
+                }
             });
 
+            if (!hasValidTasks) {
+                alert('Please add at least one task with a name and script');
+                return;
+            }
+
+            // Prepare workflow data with proper structure based on API expectations
             const workflowData = {
                 name: name,
                 description: description,
-                tasks: tasks
+                creator_id: "user@example.com", // Default creator ID since we don't have auth
+                tasks: tasks,
+                is_scheduled: enableScheduling,
+                cron_expression: enableScheduling ? cronExpression : null,
+                timezone: enableScheduling ? timezone : "UTC"
             };
 
-            fetch(`/api/v1/workflows/?execute=${executeImmediately}`, {
+            // Determine the mode parameter
+            const mode = executeImmediately ? 'run' : 'create';
+            
+            console.log('Creating workflow with data:', workflowData);
+
+            fetch(`/api/v1/workflows/?mode=${mode}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(workflowData)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => Promise.reject(err));
+                }
+                return response.json();
+            })
             .then(data => {
+                console.log('Workflow created successfully:', data);
                 bootstrap.Modal.getInstance(document.getElementById('createWorkflowModal')).hide();
+                
+                // Clear form
+                document.getElementById('createWorkflowForm').reset();
+                document.getElementById('schedulingOptions').style.display = 'none';
+                
+                // Reset tasks container to default
+                const container = document.getElementById('tasksContainer');
+                container.innerHTML = `
+                    <div class="task-item border p-3 mb-3">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label class="form-label">Task Name</label>
+                                <input type="text" class="form-control task-name" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Order</label>
+                                <input type="number" class="form-control task-order" value="0" min="0">
+                            </div>
+                        </div>
+                        <div class="mt-2">
+                            <label class="form-label">Description</label>
+                            <input type="text" class="form-control task-description">
+                        </div>
+                        <div class="mt-2">
+                            <label class="form-label">Python Script</label>
+                            <textarea class="form-control task-script" rows="4" placeholder="print('Hello, World!')" required></textarea>
+                        </div>
+                        <div class="mt-2">
+                            <label class="form-label">Requirements (one per line)</label>
+                            <textarea class="form-control task-requirements" rows="2" placeholder="requests&#10;numpy"></textarea>
+                        </div>
+                    </div>
+                `;
+                
                 alert('Workflow created successfully!');
                 location.reload();
             })
             .catch(error => {
                 console.error('Error creating workflow:', error);
-                alert('Error creating workflow');
+                alert('Error creating workflow: ' + (error.detail || error.message || 'Unknown error'));
             });
         }
     </script>

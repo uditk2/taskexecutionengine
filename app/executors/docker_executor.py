@@ -1,6 +1,8 @@
 import tempfile
 import time
 import uuid
+import json
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -45,10 +47,14 @@ class DockerExecutor(TaskExecutor):
     ) -> ExecutionResult:
         """Execute script in isolated Docker container"""
         start_time = time.time()
+        previous_outputs = kwargs.get('previous_outputs', [])
         
         try:
             # Create unique container name
             container_name = f"task_executor_{uuid.uuid4().hex[:8]}"
+            
+            # Prepare enhanced script with data pipeline support
+            enhanced_script = self._prepare_script_with_pipeline_support(script_content, previous_outputs)
             
             # Prepare script and requirements
             script_commands = []
@@ -58,8 +64,8 @@ class DockerExecutor(TaskExecutor):
                 pip_install = "pip install " + " ".join(requirements)
                 script_commands.append(pip_install)
             
-            # Add the actual script
-            script_commands.append(f"cat << 'EOF' > /tmp/script.py\n{script_content}\nEOF")
+            # Add the enhanced script
+            script_commands.append(f"cat << 'EOF' > /tmp/script.py\n{enhanced_script}\nEOF")
             script_commands.append("python /tmp/script.py")
             
             # Combine all commands
@@ -85,12 +91,16 @@ class DockerExecutor(TaskExecutor):
                 execution_time = time.time() - start_time
                 exit_code = result['StatusCode']
                 
+                # Extract task outputs from logs
+                task_outputs = self._extract_task_outputs(logs)
+                
                 if exit_code == 0:
                     return ExecutionResult(
                         success=True,
                         output=logs,
                         execution_time=execution_time,
-                        exit_code=exit_code
+                        exit_code=exit_code,
+                        task_outputs=task_outputs
                     )
                 else:
                     return ExecutionResult(
@@ -98,7 +108,8 @@ class DockerExecutor(TaskExecutor):
                         output=logs,
                         error_message=f"Container exited with code {exit_code}",
                         execution_time=execution_time,
-                        exit_code=exit_code
+                        exit_code=exit_code,
+                        task_outputs=task_outputs
                     )
             except Exception as e:
                 try:
@@ -120,6 +131,44 @@ class DockerExecutor(TaskExecutor):
                 error_message=f"Failed to start container: {str(e)}",
                 execution_time=time.time() - start_time
             )
+    
+    def _prepare_script_with_pipeline_support(self, script_content: str, previous_outputs: List[dict]) -> str:
+        """Prepare script with data pipeline support"""
+        # Read the pipeline support script
+        pipeline_script_path = Path(__file__).parent / "pipeline_support.py"
+        
+        try:
+            with open(pipeline_script_path, 'r') as f:
+                pipeline_support = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Pipeline support script not found at {pipeline_script_path}")
+        
+        # Inject the previous outputs data
+        pipeline_setup = f"""# === Data Pipeline Support ===
+{pipeline_support}
+
+# Inject previous task outputs
+PREVIOUS_OUTPUTS = {json.dumps(previous_outputs)}
+
+# === User Script ===
+"""
+        
+        return pipeline_setup + script_content
+    
+    def _extract_task_outputs(self, stdout: str) -> dict:
+        """Extract structured task outputs from stdout"""
+        try:
+            # Look for the special output markers
+            pattern = r'__TASK_OUTPUTS_START__(.+?)__TASK_OUTPUTS_END__'
+            matches = re.findall(pattern, stdout, re.DOTALL)
+            
+            if matches:
+                # Get the last output (in case multiple calls)
+                return json.loads(matches[-1])
+            
+            return {}
+        except (json.JSONDecodeError, IndexError):
+            return {}
     
     def cleanup(self) -> None:
         """Clean up Docker container"""
