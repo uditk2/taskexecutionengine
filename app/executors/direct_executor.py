@@ -1,39 +1,21 @@
-import os
 import subprocess
 import tempfile
-import shutil
-import venv
 import time
 import json
 import re
+import os
 from pathlib import Path
 from typing import List, Optional
 
 from app.executors import TaskExecutor, ExecutionResult, ExecutorFactory
-from app.core.config import settings
 
 
-class VirtualEnvExecutor(TaskExecutor):
-    """Execute tasks in isolated virtual environments"""
-    
-    # Base requirements that are always installed
-    BASE_REQUIREMENTS = [
-        "requests>=2.25.1",
-        "urllib3>=1.26.0", 
-        "certifi",
-        "setuptools",
-        "pip",
-        "wheel"
-    ]
-    
-    def __init__(self, base_path: str = None):
-        self.base_path = Path(base_path or settings.VENV_BASE_PATH)
-        self.base_path.mkdir(parents=True, exist_ok=True)
-        self.venv_path = None
+class DirectExecutor(TaskExecutor):
+    """Execute tasks directly in the current Python environment (ideal for Docker)"""
     
     @property
     def name(self) -> str:
-        return "virtualenv"
+        return "direct"
     
     def execute(
         self, 
@@ -42,80 +24,38 @@ class VirtualEnvExecutor(TaskExecutor):
         timeout: int = 3600,
         **kwargs
     ) -> ExecutionResult:
-        """Execute script in isolated virtual environment"""
+        """Execute script directly in current Python environment"""
         start_time = time.time()
         previous_outputs = kwargs.get('previous_outputs', [])
         
         try:
-            # Create unique virtual environment
-            timestamp = str(int(time.time() * 1000))
-            self.venv_path = self.base_path / f"venv_{timestamp}"
-            
-            # Create virtual environment
-            venv.create(self.venv_path, with_pip=True)
-            
-            # Get executable paths
-            if os.name == 'nt':  # Windows
-                python_exe = self.venv_path / "Scripts" / "python.exe"
-                pip_exe = self.venv_path / "Scripts" / "pip.exe"
-            else:  # Unix/Linux
-                python_exe = self.venv_path / "bin" / "python"
-                pip_exe = self.venv_path / "bin" / "pip"
-            
-            # Upgrade pip first
-            subprocess.run(
-                [str(pip_exe), "install", "--upgrade", "pip"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            # Always ensure requests is available - install it explicitly first
-            requests_result = subprocess.run(
-                [str(pip_exe), "install", "requests>=2.25.1"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if requests_result.returncode != 0:
-                return ExecutionResult(
-                    success=False,
-                    output="",
-                    error_message=f"Failed to install requests library: {requests_result.stderr}",
-                    execution_time=time.time() - start_time
-                )
-            
-            # Install other base requirements
-            for requirement in self.BASE_REQUIREMENTS[1:]:  # Skip requests since we already installed it
-                result = subprocess.run(
-                    [str(pip_exe), "install", requirement],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode != 0:
-                    print(f"Warning: Failed to install base requirement {requirement}: {result.stderr}")
-                    # Continue with execution for non-critical base requirements
-            
-            # Install user-specified requirements
+            # Install requirements if provided (but skip common ones already in Docker)
             if requirements:
-                # Filter out requests if it's already in the list to avoid conflicts
-                filtered_requirements = [req for req in requirements if not req.lower().startswith('requests')]
+                common_packages = {'requests', 'urllib3', 'certifi', 'python-dateutil', 'pytz', 'pyyaml', 'pandas', 'numpy', 'openpyxl', 'beautifulsoup4', 'lxml'}
                 
-                for requirement in filtered_requirements:
-                    result = subprocess.run(
-                        [str(pip_exe), "install", requirement],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode != 0:
-                        return ExecutionResult(
-                            success=False,
-                            output="",
-                            error_message=f"Failed to install {requirement}: {result.stderr}",
-                            execution_time=time.time() - start_time
+                # Filter out packages that are already installed in the Docker image
+                packages_to_install = []
+                for req in requirements:
+                    package_name = req.split('>=')[0].split('==')[0].split('<')[0].split('>')[0].strip()
+                    if package_name.lower() not in common_packages:
+                        packages_to_install.append(req)
+                
+                # Install only packages not already in Docker image
+                if packages_to_install:
+                    for package in packages_to_install:
+                        result = subprocess.run(
+                            ["pip", "install", package, "--no-cache-dir"],
+                            capture_output=True,
+                            text=True,
+                            timeout=300
                         )
+                        if result.returncode != 0:
+                            return ExecutionResult(
+                                success=False,
+                                output=result.stdout,
+                                error_message=f"Failed to install {package}: {result.stderr}",
+                                execution_time=time.time() - start_time
+                            )
             
             # Prepare enhanced script with data pipeline support
             enhanced_script = self._prepare_script_with_pipeline_support(script_content, previous_outputs)
@@ -128,11 +68,11 @@ class VirtualEnvExecutor(TaskExecutor):
             try:
                 # Execute the script
                 result = subprocess.run(
-                    [str(python_exe), script_path],
+                    ["python", script_path],
                     capture_output=True,
                     text=True,
                     timeout=timeout,
-                    cwd=str(self.venv_path)
+                    env=os.environ.copy()
                 )
                 
                 execution_time = time.time() - start_time
@@ -184,7 +124,17 @@ class VirtualEnvExecutor(TaskExecutor):
             with open(pipeline_script_path, 'r') as f:
                 pipeline_support = f.read()
         except FileNotFoundError:
-            raise FileNotFoundError(f"Pipeline support script not found at {pipeline_script_path}")
+            # If pipeline support file doesn't exist, create minimal support
+            pipeline_support = """
+# Minimal pipeline support
+def get_previous_outputs():
+    return PREVIOUS_OUTPUTS
+
+def save_task_output(key, value):
+    import json
+    output = {key: value}
+    print(f"__TASK_OUTPUTS_START__{json.dumps(output)}__TASK_OUTPUTS_END__")
+"""
         
         # Inject the previous outputs data
         pipeline_setup = f"""# === Data Pipeline Support ===
@@ -214,11 +164,9 @@ PREVIOUS_OUTPUTS = {json.dumps(previous_outputs)}
             return {}
     
     def cleanup(self) -> None:
-        """Clean up virtual environment"""
-        if self.venv_path and self.venv_path.exists():
-            shutil.rmtree(self.venv_path, ignore_errors=True)
-            self.venv_path = None
+        """No cleanup needed for direct execution"""
+        pass
 
 
 # Register the executor
-ExecutorFactory.register_executor("virtualenv", VirtualEnvExecutor)
+ExecutorFactory.register_executor("direct", DirectExecutor)

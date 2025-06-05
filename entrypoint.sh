@@ -43,25 +43,59 @@ except Exception as e:
     echo "✅ Database is ready!"
 }
 
+# Function to run a migration with error handling
+run_migration() {
+    local migration_script=$1
+    local migration_name=$2
+    
+    echo "🔄 Running $migration_name..."
+    if python "$migration_script"; then
+        echo "✅ $migration_name completed successfully"
+        return 0
+    else
+        echo "❌ $migration_name failed!"
+        return 1
+    fi
+}
+
 # Wait for database to be ready
 wait_for_db
 
-# Run database migrations with proper error handling
-echo "Running database migrations..."
+# Run all database migrations in the correct order
+echo "🚀 Starting database migrations..."
 
-echo "Running task outputs migration..."
-if ! python migrate_task_outputs.py; then
-    echo "❌ Task outputs migration failed!"
+# 1. Task outputs migration
+if ! run_migration "migrate_task_outputs.py" "Task Outputs Migration"; then
     exit 1
 fi
 
-echo "Running workflow scheduling migration..."
-if ! python migrate_workflow_scheduling.py; then
-    echo "❌ Workflow scheduling migration failed!"
+# 2. Workflow scheduling migration
+if ! run_migration "migrate_workflow_scheduling.py" "Workflow Scheduling Migration"; then
     exit 1
 fi
 
-echo "✅ All migrations completed successfully."
+# 3. Notification system migration
+if ! run_migration "migrate_notifications.py" "Notification System Migration"; then
+    exit 1
+fi
+
+echo "🎉 All database migrations completed successfully!"
+
+# Initialize database tables if this is the first run
+echo "🔄 Initializing database tables..."
+python -c "
+import sys
+sys.path.append('/app')
+try:
+    from app.core.database import init_db
+    init_db()
+    print('✅ Database tables initialized successfully')
+except Exception as e:
+    print(f'⚠️ Database initialization warning: {e}')
+    # Don't exit on initialization warnings as tables might already exist
+"
+
+echo "✅ Task Execution Engine initialization complete!"
 
 # Execute the main command
 exec "$@"

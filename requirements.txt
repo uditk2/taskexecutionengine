@@ -112,3 +112,10 @@ openpyxl
 
 # For keycloak oauth
 python-keycloak==2.5.0
+
+# Notification System Dependencies
+yagmail==0.15.293
+twilio==8.10.0
+python-telegram-bot==20.7
+plyer==2.1.0
+sendgrid==6.10.0

@@ -77,3 +77,4 @@ class ExecutorFactory:
 # Import executor modules to register them
 from . import venv_executor
 from . import docker_executor
+from . import direct_executor

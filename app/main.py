@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import init_db, check_db_health
-from app.api.routes import base, example, workflows, dashboard
+from app.api.routes import base, example, workflows, dashboard, notifications
 from app.middleware import logging_middleware, auth_middleware
 
 # Configure logging
@@ -81,6 +81,7 @@ app.include_router(base.router)
 app.include_router(example.router, prefix="/example")
 app.include_router(workflows.router, prefix=settings.API_PREFIX)
 app.include_router(dashboard.router)
+app.include_router(notifications.router)
 
 # Health check endpoint
 @app.get("/health")

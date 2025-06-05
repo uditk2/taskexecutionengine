@@ -37,10 +37,37 @@ services:
     build: .
     container_name: task-engine-web
     environment:
+      # Database & Redis
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/task_engine
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      
+      # Notification System - Email (Gmail example)
+      - EMAIL_BACKEND=smtp
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      # - SMTP_USERNAME=your-email@gmail.com
+      # - SMTP_PASSWORD=your-app-password
+      # - FROM_EMAIL=your-email@gmail.com
+      
+      # Notification System - SMS (Twilio)
+      # - TWILIO_ACCOUNT_SID=your-twilio-account-sid
+      # - TWILIO_AUTH_TOKEN=your-twilio-auth-token
+      # - TWILIO_FROM_NUMBER=+1234567890
+      
+      # Notification System - Telegram
+      # - TELEGRAM_BOT_TOKEN=your-bot-token
+      
+      # Default notification recipients
+      # - DEFAULT_NOTIFICATION_EMAIL=admin@example.com
+      # - DEFAULT_NOTIFICATION_PHONE=+1234567890
+      # - DEFAULT_NOTIFICATION_TELEGRAM_CHAT_ID=123456789
+      
+      # Desktop notifications
+      - DESKTOP_NOTIFICATION_TIMEOUT=10
+      - DESKTOP_APP_NAME=Task Engine
     volumes:
       - ./app:/app/app
       - ./logs:/app/logs
@@ -61,11 +88,38 @@ services:
       dockerfile: Dockerfile.worker
     container_name: task-engine-worker
     environment:
+      # Database & Redis
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/task_engine
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DEFAULT_EXECUTOR=virtualenv
+      - DEFAULT_EXECUTOR=direct
+      
+      # Notification System - Email (Gmail example)
+      - EMAIL_BACKEND=smtp
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      # - SMTP_USERNAME=your-email@gmail.com
+      # - SMTP_PASSWORD=your-app-password
+      # - FROM_EMAIL=your-email@gmail.com
+      
+      # Notification System - SMS (Twilio)
+      # - TWILIO_ACCOUNT_SID=your-twilio-account-sid
+      # - TWILIO_AUTH_TOKEN=your-twilio-auth-token
+      # - TWILIO_FROM_NUMBER=+1234567890
+      
+      # Notification System - Telegram
+      # - TELEGRAM_BOT_TOKEN=your-bot-token
+      
+      # Default notification recipients
+      # - DEFAULT_NOTIFICATION_EMAIL=admin@example.com
+      # - DEFAULT_NOTIFICATION_PHONE=+1234567890
+      # - DEFAULT_NOTIFICATION_TELEGRAM_CHAT_ID=123456789
+      
+      # Desktop notifications
+      - DESKTOP_NOTIFICATION_TIMEOUT=10
+      - DESKTOP_APP_NAME=Task Engine
     volumes:
       - ./app:/app/app
       - task_venvs:/tmp/task_venvs
@@ -85,10 +139,38 @@ services:
       dockerfile: Dockerfile.scheduler
     container_name: task-engine-scheduler
     environment:
+      # Database & Redis
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/task_engine
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      
+      # Notification System - Email (Gmail example)
+      - EMAIL_BACKEND=smtp
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      # - SMTP_USERNAME=your-email@gmail.com
+      # - SMTP_PASSWORD=your-app-password
+      # - FROM_EMAIL=your-email@gmail.com
+      
+      # Notification System - SMS (Twilio)
+      # - TWILIO_ACCOUNT_SID=your-twilio-account-sid
+      # - TWILIO_AUTH_TOKEN=your-twilio-auth-token
+      # - TWILIO_FROM_NUMBER=+1234567890
+      
+      # Notification System - Telegram
+      - TELEGRAM_BOT_TOKEN=7780519301:AAE_nD6gBWzv2eh7-8zkWgbAa56caHRncnU
+
+      
+      # Default notification recipients
+      # - DEFAULT_NOTIFICATION_EMAIL=admin@example.com
+      # - DEFAULT_NOTIFICATION_PHONE=+1234567890
+      # - DEFAULT_NOTIFICATION_TELEGRAM_CHAT_ID=123456789
+      
+      # Desktop notifications
+      - DESKTOP_NOTIFICATION_TIMEOUT=10
+      - DESKTOP_APP_NAME=Task Engine
     volumes:
       - ./app:/app/app
     depends_on:

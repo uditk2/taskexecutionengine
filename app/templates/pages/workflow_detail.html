@@ -248,7 +248,7 @@
 </div>
 
 <script>
-let pollInterval = {{ poll_interval }} * 1000;
+let pollInterval = {{ poll_interval|default(15) }} * 1000;
 const workflowId = {{ workflow.id }};
 
 function updateWorkflowStatus() {
@@ -289,7 +289,9 @@ function updateWorkflowStatus() {
                 }
             });
         })
-        .catch(error => console.error('Error updating workflow status:', error));
+        .catch(error => {
+            console.error('Error updating workflow status:', error);
+        });
 }
 
 // Execute workflow
@@ -297,14 +299,19 @@ document.getElementById('execute-btn')?.addEventListener('click', function() {
     fetch(`/api/v1/workflows/${workflowId}/execute`, {
         method: 'POST'
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
     .then(data => {
         alert('Workflow execution started');
         location.reload();
     })
     .catch(error => {
         console.error('Error executing workflow:', error);
-        alert('Error executing workflow');
+        alert('Error executing workflow: ' + error.message);
     });
 });
 
@@ -313,14 +320,19 @@ document.getElementById('cancel-btn')?.addEventListener('click', function() {
     fetch(`/api/v1/workflows/${workflowId}/cancel`, {
         method: 'POST'
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
     .then(data => {
         alert('Workflow cancelled');
         location.reload();
     })
     .catch(error => {
         console.error('Error cancelling workflow:', error);
-        alert('Error cancelling workflow');
+        alert('Error cancelling workflow: ' + error.message);
     });
 });
 
@@ -329,7 +341,12 @@ document.addEventListener('click', function(e) {
     if (e.target.classList.contains('view-task-btn')) {
         const taskId = e.target.dataset.taskId;
         fetch(`/api/v1/workflows/${workflowId}`)
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 const task = data.tasks.find(t => t.id == taskId);
                 if (task) {
@@ -356,6 +373,10 @@ document.addEventListener('click', function(e) {
                     `;
                     new bootstrap.Modal(document.getElementById('taskModal')).show();
                 }
+            })
+            .catch(error => {
+                console.error('Error fetching task details:', error);
+                alert('Error fetching task details: ' + error.message);
             });
     }
 });
@@ -383,14 +404,19 @@ document.getElementById('saveScheduleBtn')?.addEventListener('click', function()
                 timezone: timezone
             })
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
             alert('Workflow scheduled successfully');
             location.reload();
         })
         .catch(error => {
             console.error('Error scheduling workflow:', error);
-            alert('Error scheduling workflow');
+            alert('Error scheduling workflow: ' + error.message);
         });
     } else {
         form.classList.add('was-validated');
@@ -403,14 +429,19 @@ document.getElementById('unschedule-btn')?.addEventListener('click', function() 
         fetch(`/api/v1/workflows/${workflowId}/schedule`, {
             method: 'DELETE'
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
             alert('Workflow unscheduled');
             location.reload();
         })
         .catch(error => {
             console.error('Error unscheduling workflow:', error);
-            alert('Error unscheduling workflow');
+            alert('Error unscheduling workflow: ' + error.message);
         });
     }
 });
@@ -418,7 +449,12 @@ document.getElementById('unschedule-btn')?.addEventListener('click', function() 
 // Show schedule info
 document.getElementById('schedule-info-btn')?.addEventListener('click', function() {
     fetch(`/api/v1/workflows/${workflowId}/schedule`)
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
             const scheduleInfoBody = document.getElementById('scheduleInfoBody');
             scheduleInfoBody.innerHTML = `
@@ -426,13 +462,13 @@ document.getElementById('schedule-info-btn')?.addEventListener('click', function
                 <p><strong>Timezone:</strong> ${data.timezone}</p>
                 <p><strong>Next Run:</strong> ${data.next_run_at ? new Date(data.next_run_at).toLocaleString() : 'N/A'}</p>
                 <p><strong>Last Run:</strong> ${data.last_run_at ? new Date(data.last_run_at).toLocaleString() : 'Never'}</p>
-                <p><strong>Run Count:</strong> ${data.run_count}</p>
+                <p><strong>Run Count:</strong> ${data.run_count || 0}</p>
             `;
             new bootstrap.Modal(document.getElementById('scheduleInfoModal')).show();
         })
         .catch(error => {
             console.error('Error fetching schedule info:', error);
-            alert('Error fetching schedule info');
+            alert('Error fetching schedule info: ' + error.message);
         });
 });
 
@@ -443,14 +479,19 @@ document.getElementById('delete-btn')?.addEventListener('click', function() {
         fetch(`/api/v1/workflows/${workflowId}`, {
             method: 'DELETE'
         })
-        .then(response => response.json())
-        .then data => {
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then((data) => {
             alert('Workflow deleted successfully');
             location.href = '/dashboard';
         })
         .catch(error => {
             console.error('Error deleting workflow:', error);
-            alert('Error deleting workflow');
+            alert('Error deleting workflow: ' + error.message);
         });
     }
 });
@@ -458,6 +499,7 @@ document.getElementById('delete-btn')?.addEventListener('click', function() {
 // Helper function for cron templates
 function setCron(cronExpr) {
     document.getElementById('cronExpression').value = cronExpr;
+    interpretCronExpression(cronExpr, 'detailCronInterpretation');
 }
 
 // Show cron help
@@ -514,6 +556,14 @@ function interpretCronExpression(cronExpr, targetElementId) {
     
     document.getElementById(targetElementId).innerHTML = `<strong>Schedule:</strong> <span class="text-success">${description}</span>`;
 }
+
+// Initialize cron interpretation on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const cronInput = document.getElementById('cronExpression');
+    if (cronInput && cronInput.value) {
+        interpretCronExpression(cronInput.value, 'detailCronInterpretation');
+    }
+});
 </script>
 
 {% endblock %}
