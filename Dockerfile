@@ -7,11 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# Install required build dependencies
+# Install required build dependencies including C++ compiler for pandas
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    g++ \
     python3-dev \
     libc-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
