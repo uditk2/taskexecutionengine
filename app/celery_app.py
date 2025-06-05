@@ -27,5 +27,9 @@ celery_app.conf.beat_schedule = {
     'cleanup-old-tasks': {
         'task': 'app.tasks.workflow_tasks.cleanup_old_tasks',
         'schedule': 3600.0  # Run every hour
+    },
+    'check-scheduled-workflows': {
+        'task': 'app.tasks.workflow_tasks.check_and_execute_scheduled_workflows',
+        'schedule': 60.0  # Check every minute
     }
 }

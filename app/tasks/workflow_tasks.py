@@ -246,6 +246,41 @@ def execute_scheduled_workflow(workflow_id: int):
 
 
 @celery_app.task
+def check_and_execute_scheduled_workflows():
+    """Check for scheduled workflows that are due to run and execute them"""
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        
+        # Find workflows that are scheduled and due to run
+        due_workflows = db.query(Workflow).filter(
+            Workflow.is_scheduled == True,
+            Workflow.next_run_at <= now,
+            Workflow.status.in_([WorkflowStatus.PENDING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED])
+        ).all()
+        
+        executed_count = 0
+        for workflow in due_workflows:
+            try:
+                # Execute the scheduled workflow
+                execute_scheduled_workflow.delay(workflow.id)
+                executed_count += 1
+            except Exception as e:
+                print(f"Error scheduling workflow {workflow.id}: {e}")
+        
+        return {
+            "status": "completed",
+            "checked_at": now.isoformat(),
+            "executed_count": executed_count
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+@celery_app.task
 def cleanup_old_tasks():
     """Clean up old completed/failed tasks and workflows"""
     db = SessionLocal()
