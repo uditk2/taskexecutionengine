@@ -179,10 +179,18 @@
             <div class="modal-body">
                 <form id="scheduleForm">
                     <div class="mb-3">
-                        <label for="cronExpression" class="form-label">Cron Expression</label>
+                        <label for="cronExpression" class="form-label">
+                            Cron Expression 
+                            <button type="button" class="btn btn-link btn-sm p-0 ms-1" onclick="showCronHelp()" title="Cron Help">
+                                <i class="fas fa-question-circle text-info"></i>
+                            </button>
+                        </label>
                         <input type="text" class="form-control" id="cronExpression" name="cron_expression" required 
-                               placeholder="0 9 * * 1-5" value="0 9 * * 1-5">
+                               placeholder="0 9 * * 1-5" value="0 9 * * 1-5" onchange="interpretCronExpression(this.value, 'detailCronInterpretation')">
                         <div class="form-text">Format: minute hour day month day_of_week</div>
+                        <div id="detailCronInterpretation" class="mt-2 p-2 bg-light border rounded small">
+                            <strong>Schedule:</strong> <span id="detailCronDescription">Weekdays at 9:00 AM (Mon-Fri)</span>
+                        </div>
                     </div>
                     
                     <div class="mb-3">
@@ -436,7 +444,7 @@ document.getElementById('delete-btn')?.addEventListener('click', function() {
             method: 'DELETE'
         })
         .then(response => response.json())
-        .then(data => {
+        .then data => {
             alert('Workflow deleted successfully');
             location.href = '/dashboard';
         })
@@ -452,7 +460,60 @@ function setCron(cronExpr) {
     document.getElementById('cronExpression').value = cronExpr;
 }
 
-// Start polling
-setInterval(updateWorkflowStatus, pollInterval);
+// Show cron help
+function showCronHelp() {
+    alert(`Cron Expression Format:
+* * * * *  Command to be executed
+
+Field number  Meaning
+     *     *    *    *    *
+     -     -    -    -    -
+     |     |    |    |    |
+     |     |    |    |    +----- Day of the week (0 - 7) (Sunday is both 0 and 7)
+     |     |    |    +------- Month (1 - 12)
+     |     |    +--------- Day of the month (1 - 31)
+     |     +----------- Hour (0 - 23)
+     +------------- Min
+
+Examples:
+0 9 * * 1-5   : Weekdays at 9 AM
+0 */2 * * *   : Every 2 hours
+30 9 1 * *    : First day of month at 9:30 AM`);
+}
+
+// Start polling for status updates
+if (document.getElementById('workflow-status').textContent.trim() === 'Running') {
+    setInterval(updateWorkflowStatus, pollInterval);
+}
+
+// Cron expression interpretation function
+function interpretCronExpression(cronExpr, targetElementId) {
+    const parts = cronExpr.split(' ');
+    if (parts.length !== 5) {
+        document.getElementById(targetElementId).innerHTML = '<strong>Schedule:</strong> <span class="text-danger">Invalid cron expression</span>';
+        return;
+    }
+    
+    const [minute, hour, day, month, dayOfWeek] = parts;
+    let description = '';
+    
+    // Simple interpretation - can be enhanced
+    if (cronExpr === '0 9 * * 1-5') {
+        description = 'Weekdays at 9:00 AM (Mon-Fri)';
+    } else if (cronExpr === '0 9 * * *') {
+        description = 'Daily at 9:00 AM';
+    } else if (cronExpr === '0 * * * *') {
+        description = 'Every hour';
+    } else if (cronExpr === '0 9 * * 1') {
+        description = 'Every Monday at 9:00 AM';
+    } else if (cronExpr === '0 9 1 * *') {
+        description = 'First day of every month at 9:00 AM';
+    } else {
+        description = `Custom schedule: ${cronExpr}`;
+    }
+    
+    document.getElementById(targetElementId).innerHTML = `<strong>Schedule:</strong> <span class="text-success">${description}</span>`;
+}
 </script>
+
 {% endblock %}
