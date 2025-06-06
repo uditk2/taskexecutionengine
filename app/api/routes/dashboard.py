@@ -6,13 +6,21 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.orm import selectinload
 from pathlib import Path
 from typing import Optional
+import json
 from app.core.database import get_db
 from app.models.workflow import Workflow, WorkflowStatus
 from app.models.task import Task, TaskStatus
 from app.core.config import settings
 
+def escapejs_filter(value):
+    """Custom Jinja2 filter to escape JavaScript strings"""
+    if value is None:
+        return ""
+    return json.dumps(str(value))[1:-1]  # Remove the surrounding quotes
+
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory=Path(__file__).parent.parent.parent / "templates")
+templates.env.filters['escapejs'] = escapejs_filter
 
 
 @router.get("/active-tasks", response_class=HTMLResponse)

@@ -4,12 +4,13 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
+import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import init_db, check_db_health
-from app.api.routes import base, example, workflows, dashboard, notifications
+from app.api.routes import base, example, workflows, dashboard, notifications, tasks
 from app.middleware import logging_middleware, auth_middleware
 
 # Configure logging
@@ -18,6 +19,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def escapejs_filter(value):
+    """Custom Jinja2 filter to escape JavaScript strings"""
+    if value is None:
+        return ""
+    return json.dumps(str(value))[1:-1]  # Remove the surrounding quotes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,6 +79,9 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 # Configure templates
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
+# Add custom filters to templates
+templates.env.filters['escapejs'] = escapejs_filter
+
 # Add middleware
 app.add_middleware(logging_middleware.LoggingMiddleware)
 app.add_middleware(auth_middleware.AuthMiddleware)
@@ -80,6 +90,7 @@ app.add_middleware(auth_middleware.AuthMiddleware)
 app.include_router(base.router)
 app.include_router(example.router, prefix="/example")
 app.include_router(workflows.router, prefix=settings.API_PREFIX)
+app.include_router(tasks.router, prefix=settings.API_PREFIX)
 app.include_router(dashboard.router)
 app.include_router(notifications.router)
 
