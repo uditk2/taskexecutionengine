@@ -121,7 +121,7 @@ def execute_task(self, task_id: int, executor_name: str = None, previous_result=
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        
+
         workflow = db.query(Workflow).filter(Workflow.id == task.workflow_id).first()
         workflow_name = workflow.name if workflow else f"Workflow {task.workflow_id}"
         
@@ -180,22 +180,42 @@ def execute_task(self, task_id: int, executor_name: str = None, previous_result=
             Task.status == TaskStatus.COMPLETED
         ).order_by(Task.order).all()
         
-        # Create executor
-        executor_name = executor_name or settings.DEFAULT_EXECUTOR
-        executor = ExecutorFactory.create_executor(executor_name)
+        # Create executor with proper error handling and fallback
+        # Override executor_name to always use virtualenv as requested
+        executor_name = "virtualenv"
+        
+        # Debug logging for executor selection
+        print(f"Using executor: {executor_name}")
+        
+        # Check if the executor is available
+        available_executors = ExecutorFactory.list_executors()
+        if executor_name not in available_executors:
+            raise RuntimeError(f"The virtualenv executor is not available. Available executors: {available_executors}")
+        
+        try:
+            executor = ExecutorFactory.create_executor(executor_name)
+        except Exception as e:
+            print(f"Failed to create executor '{executor_name}': {e}")
+            raise RuntimeError(f"Failed to create virtualenv executor: {e}")
         
         # Execute task with previous outputs available
-        result = executor.execute(
-            script_content=task.script_content,
-            requirements=task.requirements or [],
-            timeout=settings.TASK_TIMEOUT,
-            previous_outputs=[{
-                'task_name': prev_task.name,
-                'task_order': prev_task.order,
-                'outputs': prev_task.task_outputs or {},
-                'raw_output': prev_task.output
-            } for prev_task in previous_tasks]
-        )
+        try:
+            result = executor.execute(
+                script_content=task.script_content,
+                requirements=task.requirements or [],
+                timeout=settings.TASK_TIMEOUT,
+                previous_outputs=[{
+                    'task_name': prev_task.name,
+                    'task_order': prev_task.order,
+                    'outputs': prev_task.task_outputs or {},
+                    'raw_output': prev_task.output
+                } for prev_task in previous_tasks]
+            )
+        except Exception as e:
+            error_message = str(e)
+            if "Failed to establish a new connection" in error_message or "Temporary failure in name resolution" in error_message:
+                error_message = f"Network connectivity error installing packages. Please check your internet connection: {error_message}"
+            raise RuntimeError(error_message)
         
         # Update task with results
         if result.success:

@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 from typing import List, Optional
+import urllib.request
+import sys
 
 from app.executors import TaskExecutor, ExecutionResult, ExecutorFactory
 from app.core.config import settings
@@ -16,14 +18,15 @@ from app.core.config import settings
 class VirtualEnvExecutor(TaskExecutor):
     """Execute tasks in isolated virtual environments"""
     
-    # Base requirements that are always installed
+    # Base requirements that match the actual container versions for consistency
     BASE_REQUIREMENTS = [
-        "requests>=2.25.1",
-        "urllib3>=1.26.0", 
-        "certifi",
-        "setuptools",
-        "pip",
-        "wheel"
+        "pip==25.1.1",  # Use latest available pip
+        "setuptools==65.5.1",
+        "wheel",
+        "certifi==2025.4.26",
+        "urllib3==1.26.20", 
+        "cryptography==45.0.3",
+        "requests==2.31.0"
     ]
     
     def __init__(self, base_path: str = None):
@@ -51,8 +54,9 @@ class VirtualEnvExecutor(TaskExecutor):
             timestamp = str(int(time.time() * 1000))
             self.venv_path = self.base_path / f"venv_{timestamp}"
             
-            # Create virtual environment
-            venv.create(self.venv_path, with_pip=True)
+            # Create virtual environment with system site packages to inherit SSL modules
+            # This ensures SSL support is properly inherited from the host environment
+            venv.create(self.venv_path, with_pip=True, system_site_packages=True)
             
             # Get executable paths
             if os.name == 'nt':  # Windows
@@ -62,53 +66,34 @@ class VirtualEnvExecutor(TaskExecutor):
                 python_exe = self.venv_path / "bin" / "python"
                 pip_exe = self.venv_path / "bin" / "pip"
             
-            # Upgrade pip first
-            subprocess.run(
-                [str(pip_exe), "install", "--upgrade", "pip"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            # Always ensure requests is available - install it explicitly first
-            requests_result = subprocess.run(
-                [str(pip_exe), "install", "requests>=2.25.1"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if requests_result.returncode != 0:
+            # Verify SSL support is available in the virtual environment
+            ssl_available = self._check_ssl_support(python_exe)
+            if not ssl_available:
                 return ExecutionResult(
                     success=False,
                     output="",
-                    error_message=f"Failed to install requests library: {requests_result.stderr}",
+                    error_message="SSL module is not available in the virtual environment. Please rebuild the Docker container.",
                     execution_time=time.time() - start_time
                 )
             
-            # Install other base requirements
-            for requirement in self.BASE_REQUIREMENTS[1:]:  # Skip requests since we already installed it
-                result = subprocess.run(
-                    [str(pip_exe), "install", requirement],
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
+            # Upgrade pip to latest version
+            pip_upgrade_result = self._install_package_standard(pip_exe, "pip==25.1.1")
+            if pip_upgrade_result.returncode != 0:
+                print(f"Warning: Failed to upgrade pip: {pip_upgrade_result.stderr}")
+            
+            # Install base requirements using standard pip (SSL should work now)
+            for requirement in self.BASE_REQUIREMENTS:
+                if requirement.startswith("pip=="):
+                    continue  # Skip pip since we already upgraded it
+                result = self._install_package_standard(pip_exe, requirement)
                 if result.returncode != 0:
                     print(f"Warning: Failed to install base requirement {requirement}: {result.stderr}")
-                    # Continue with execution for non-critical base requirements
+                    # Continue since system packages might already provide them
             
             # Install user-specified requirements
             if requirements:
-                # Filter out requests if it's already in the list to avoid conflicts
-                filtered_requirements = [req for req in requirements if not req.lower().startswith('requests')]
-                
-                for requirement in filtered_requirements:
-                    result = subprocess.run(
-                        [str(pip_exe), "install", requirement],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
+                for requirement in requirements:
+                    result = self._install_package_standard(pip_exe, requirement)
                     if result.returncode != 0:
                         return ExecutionResult(
                             success=False,
@@ -212,6 +197,44 @@ PREVIOUS_OUTPUTS = {json.dumps(previous_outputs)}
             return {}
         except (json.JSONDecodeError, IndexError):
             return {}
+    
+    def _check_ssl_support(self, python_exe: Path) -> bool:
+        """Check if SSL is available in the Python environment"""
+        try:
+            result = subprocess.run(
+                [str(python_exe), "-c", "import ssl; print('SSL available')"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return "SSL available" in result.stdout and result.returncode == 0
+        except Exception:
+            return False
+    
+    def _install_package_standard(self, pip_exe, package, timeout=300):
+        """Install a package using standard pip installation"""
+        try:
+            cmd = [str(pip_exe), "install", "--no-cache-dir", "--disable-pip-version-check", package]
+            print(f"Installing {package} using standard pip installation...")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            if result.returncode == 0:
+                print(f"✅ Successfully installed {package}")
+            else:
+                print(f"❌ Failed to install {package}: {result.stderr}")
+            
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"⏰ Timeout expired installing {package}")
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="Timeout expired")
+        except Exception as e:
+            print(f"⚠️ Unexpected error installing {package}: {e}")
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr=str(e))
     
     def cleanup(self) -> None:
         """Clean up virtual environment"""

@@ -272,7 +272,35 @@ class DesktopProvider(NotificationProvider):
     
     def _validate_config(self) -> bool:
         """Validate desktop notification configuration"""
+        # Check if we're running in Docker
+        if self._is_running_in_docker():
+            logger.info("Desktop notifications disabled: running in Docker container")
+            return False
+            
         return PLYER_AVAILABLE
+    
+    def _is_running_in_docker(self) -> bool:
+        """Check if we're running inside a Docker container"""
+        try:
+            # Check for Docker-specific files
+            if os.path.exists('/.dockerenv'):
+                return True
+                
+            # Check cgroup for docker
+            with open('/proc/1/cgroup', 'r') as f:
+                content = f.read()
+                if 'docker' in content or 'containerd' in content:
+                    return True
+        except (FileNotFoundError, PermissionError):
+            pass
+            
+        # Check for common Docker environment variables
+        docker_env_vars = ['DOCKER_CONTAINER', 'CONTAINER_NAME']
+        for env_var in docker_env_vars:
+            if os.getenv(env_var):
+                return True
+                
+        return False
     
     async def send_notification(self, message: NotificationMessage) -> NotificationResult:
         """Send desktop notification"""
@@ -280,7 +308,7 @@ class DesktopProvider(NotificationProvider):
             return NotificationResult(
                 success=False,
                 provider="desktop",
-                error="Desktop notifications not available"
+                error="Desktop notifications not available (disabled in Docker environment)"
             )
         
         try:

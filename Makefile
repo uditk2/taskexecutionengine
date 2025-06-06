@@ -31,6 +31,23 @@ clean: ## Clean up containers, networks, and volumes
 	docker-compose down -v --remove-orphans
 	docker system prune -f
 
+rebuild: ## Force rebuild all images with no cache to fix version issues
+	docker-compose down -v --remove-orphans
+	docker-compose build --no-cache
+	docker-compose up -d
+
+fix-ssl: ## Fix SSL issues by rebuilding with proper Python version
+	@echo "🔧 Fixing SSL issues by rebuilding containers..."
+	@echo "📋 Current Python version in container:"
+	@docker exec task-engine-worker python --version 2>/dev/null || echo "Container not running"
+	@echo "🔄 Rebuilding with Python 3.12 (as specified in Dockerfile)..."
+	@make rebuild
+	@echo "⏳ Waiting for services to be ready..."
+	@sleep 30
+	@echo "✅ Testing SSL in new container:"
+	@docker exec task-engine-worker python -c "import ssl; print('SSL Version:', ssl.OPENSSL_VERSION)"
+	@echo "✅ SSL fix complete!"
+
 test: ## Run tests
 	docker-compose exec web pytest
 

@@ -8,7 +8,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from sqlalchemy import text
-from app.core.database import engine
+from app.core.database import engine, create_tables
 
 def migrate_database():
     """Add notification-related tables and columns"""
@@ -26,6 +26,26 @@ def migrate_database():
     # Use a transaction to ensure atomicity
     with engine.begin() as conn:
         try:
+            # First check if base tables exist
+            workflows_check = conn.execute(text("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_name = 'workflows' AND table_schema = 'public'
+            """))
+            tasks_check = conn.execute(text("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_name = 'tasks' AND table_schema = 'public'
+            """))
+            
+            if not workflows_check.fetchone() or not tasks_check.fetchone():
+                print("⚠️  Base tables don't exist. Creating base database schema...")
+                # Import models to ensure they're registered with Base
+                from app.models.task import Task
+                from app.models.workflow import Workflow
+                
+                # Create all base tables first
+                create_tables()
+                print("✅ Base database schema created successfully")
+            
             print("🔄 Creating notification_configs table...")
             
             # Create notification_configs table if it doesn't exist
@@ -157,14 +177,14 @@ def migrate_database():
                     'description': 'Index on task_id for notification history'
                 },
                 {
-                    'name': 'idx_notification_history_sent_at',
-                    'sql': 'CREATE INDEX idx_notification_history_sent_at ON notification_history (sent_at)',
-                    'description': 'Index on sent_at for notification history'
+                    'name': 'idx_notification_history_event',
+                    'sql': 'CREATE INDEX idx_notification_history_event ON notification_history (event)',
+                    'description': 'Index on event type for notification history'
                 },
                 {
-                    'name': 'idx_notification_history_event_success',
-                    'sql': 'CREATE INDEX idx_notification_history_event_success ON notification_history (event, success)',
-                    'description': 'Composite index on event and success'
+                    'name': 'idx_notification_history_sent_at',
+                    'sql': 'CREATE INDEX idx_notification_history_sent_at ON notification_history (sent_at)',
+                    'description': 'Index on sent_at timestamp for notification history'
                 }
             ]
             
@@ -172,17 +192,17 @@ def migrate_database():
             for index in indexes_to_create:
                 try:
                     # Check if index already exists
-                    index_result = conn.execute(text("""
+                    index_result = conn.execute(text(f"""
                         SELECT indexname FROM pg_indexes 
-                        WHERE indexname = :index_name
-                    """), {"index_name": index['name']})
+                        WHERE indexname = '{index['name']}'
+                    """))
                     
                     if not index_result.fetchone():
                         conn.execute(text(index['sql']))
-                        print(f"✅ Created {index['name']} - {index['description']}")
+                        print(f"✅ Created {index['description']}")
                         created_indexes += 1
                     else:
-                        print(f"✅ {index['name']} already exists")
+                        print(f"✅ {index['description']} already exists")
                 except Exception as e:
                     print(f"⚠️ Index creation warning for {index['name']}: {e}")
             

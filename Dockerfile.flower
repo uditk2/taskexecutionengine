@@ -6,12 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including SSL support
 RUN apt-get update && apt-get install -y \
     gcc \
     build-essential \
     python3-dev \
     libc-dev \
+    libssl-dev \
+    libffi-dev \
+    openssl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

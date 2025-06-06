@@ -14,6 +14,10 @@ services:
       - "5432:5432"
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -26,6 +30,10 @@ services:
     container_name: task-engine-redis
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -80,6 +88,10 @@ services:
         condition: service_healthy
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     restart: unless-stopped
 
   worker:
@@ -131,6 +143,10 @@ services:
         condition: service_healthy
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     restart: unless-stopped
 
   scheduler:
@@ -180,6 +196,10 @@ services:
         condition: service_healthy
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     restart: unless-stopped
 
   flower:
@@ -197,6 +217,10 @@ services:
         condition: service_healthy
     networks:
       - task-engine-net
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     restart: unless-stopped
 
 volumes:
@@ -208,3 +232,5 @@ volumes:
 networks:
   task-engine-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: task-engine-br

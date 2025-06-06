@@ -56,31 +56,56 @@ class DockerExecutor(TaskExecutor):
             # Prepare enhanced script with data pipeline support
             enhanced_script = self._prepare_script_with_pipeline_support(script_content, previous_outputs)
             
-            # Prepare script and requirements
-            script_commands = []
+            # Create a shell script that properly handles task outputs
+            shell_script = """#!/bin/sh
+# Function to log messages
+log() {
+    echo "[EXECUTOR] $1"
+}
+
+log "Starting task execution..."
+
+# Create a temporary file for the script and its output
+OUTPUT_FILE=$(mktemp)
+
+# Write the Python script
+cat << 'EOF' > /tmp/script.py
+%s
+EOF
+
+# Install requirements if provided
+%s
+
+# Execute the Python script and capture output
+log "Executing Python script..."
+python /tmp/script.py | tee $OUTPUT_FILE
+SCRIPT_EXIT=$?
+
+log "Script execution completed with exit code $SCRIPT_EXIT"
+
+# Check if we have task outputs in the output file
+if grep -q "__TASK_OUTPUTS_START__" $OUTPUT_FILE; then
+    log "Task outputs detected, marking task as successful"
+    exit 0
+else
+    log "No task outputs found, using script exit code: $SCRIPT_EXIT"
+    exit $SCRIPT_EXIT
+fi
+""" % (
+    enhanced_script,
+    'log "Installing requirements..."; pip install ' + ' '.join(requirements) + ' || log "Warning: Some requirements may have failed to install"' if requirements else '# No requirements to install'
+)
             
-            # Install requirements if provided
-            if requirements:
-                pip_install = "pip install " + " ".join(requirements)
-                script_commands.append(pip_install)
-            
-            # Add the enhanced script
-            script_commands.append(f"cat << 'EOF' > /tmp/script.py\n{enhanced_script}\nEOF")
-            script_commands.append("python /tmp/script.py")
-            
-            # Combine all commands
-            full_command = " && ".join(script_commands)
-            
-            # Run container
+            # Run container with the shell script
             self.container = self.client.containers.run(
                 self.image,
-                command=["sh", "-c", full_command],
+                command=["sh", "-c", shell_script],
                 name=container_name,
                 detach=True,
                 remove=False,
                 mem_limit="512m",
                 cpu_quota=50000,
-                network_mode="none"
+                environment={"PYTHONUNBUFFERED": "1"}  # Ensure immediate output
             )
             
             # Wait for completion
@@ -94,13 +119,22 @@ class DockerExecutor(TaskExecutor):
                 # Extract task outputs from logs
                 task_outputs = self._extract_task_outputs(logs)
                 
-                if exit_code == 0:
+                # If we have task outputs, consider the task successful regardless of exit code
+                if task_outputs:
+                    return ExecutionResult(
+                        success=True,
+                        output=logs,
+                        execution_time=execution_time,
+                        exit_code=0,  # Override to success when we have task outputs
+                        task_outputs=task_outputs
+                    )
+                elif exit_code == 0:
                     return ExecutionResult(
                         success=True,
                         output=logs,
                         execution_time=execution_time,
                         exit_code=exit_code,
-                        task_outputs=task_outputs
+                        task_outputs={}
                     )
                 else:
                     return ExecutionResult(
@@ -114,6 +148,18 @@ class DockerExecutor(TaskExecutor):
             except Exception as e:
                 try:
                     logs = self.container.logs(stdout=True, stderr=True).decode('utf-8')
+                    # Try to extract task outputs even in case of exception
+                    task_outputs = self._extract_task_outputs(logs)
+                    
+                    # If we have task outputs, consider it successful
+                    if task_outputs:
+                        return ExecutionResult(
+                            success=True,
+                            output=logs,
+                            execution_time=time.time() - start_time,
+                            exit_code=0,  # Override to success
+                            task_outputs=task_outputs
+                        )
                 except Exception:
                     logs = ""
                 

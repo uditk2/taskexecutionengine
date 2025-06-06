@@ -9,6 +9,7 @@ import json
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.task import Task
+from app.executors import ExecutorFactory
 
 def escapejs_filter(value):
     """Custom Jinja2 filter to escape JavaScript strings"""
@@ -43,3 +44,59 @@ async def edit_task(request: Request, task_id: int, db: AsyncSession = Depends(g
 @router.get("/health", tags=["health"])
 async def health_check():
     return {"status": "ok"}
+
+@router.get("/diagnostics", tags=["debug"])
+async def diagnostics():
+    """Diagnostic information for debugging executor and configuration issues"""
+    try:
+        # Get available executors
+        available_executors = ExecutorFactory.list_executors()
+        
+        # Test each executor
+        executor_status = {}
+        for executor_name in available_executors:
+            try:
+                executor = ExecutorFactory.create_executor(executor_name)
+                executor_status[executor_name] = {
+                    "available": True,
+                    "name": executor.name,
+                    "class": executor.__class__.__name__,
+                    "error": None
+                }
+                executor.cleanup()  # Clean up test instance
+            except Exception as e:
+                executor_status[executor_name] = {
+                    "available": False,
+                    "name": executor_name,
+                    "class": "Unknown",
+                    "error": str(e)
+                }
+        
+        # Configuration info
+        config_info = {
+            "DEFAULT_EXECUTOR": settings.DEFAULT_EXECUTOR,
+            "TASK_TIMEOUT": settings.TASK_TIMEOUT,
+            "VENV_BASE_PATH": settings.VENV_BASE_PATH,
+            "DOCKER_IMAGE": settings.DOCKER_IMAGE,
+        }
+        
+        return {
+            "status": "ok",
+            "configuration": config_info,
+            "available_executors": available_executors,
+            "executor_status": executor_status,
+            "default_executor_available": settings.DEFAULT_EXECUTOR in available_executors,
+            "recommended_action": (
+                "Configuration looks good!" if settings.DEFAULT_EXECUTOR in available_executors 
+                else f"Default executor '{settings.DEFAULT_EXECUTOR}' not available. Available: {available_executors}"
+            )
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "available_executors": [],
+            "executor_status": {},
+            "default_executor_available": False,
+            "recommended_action": f"Critical error: {str(e)}"
+        }

@@ -27,9 +27,13 @@
                         <i class="fas fa-calendar-plus"></i> Schedule
                     </button>
                     {% endif %}
-                    {% if workflow.status == 'pending' %}
-                    <button class="btn btn-success" id="execute-btn">Execute</button>
-                    {% elif workflow.status == 'running' %}
+                    <!-- Manual execution button - always available except when running -->
+                    {% if workflow.status != 'running' %}
+                    <button class="btn btn-success" id="execute-btn">
+                        <i class="fas fa-play"></i> Run Now
+                    </button>
+                    {% endif %}
+                    {% if workflow.status == 'running' %}
                     <button class="btn btn-warning" id="cancel-btn">Cancel</button>
                     {% endif %}
                     {% if workflow.status != 'running' %}
@@ -422,13 +426,19 @@ document.getElementById('cancel-btn')?.addEventListener('click', function() {
         method: 'POST'
     })
     .then(response => {
-        if (!response.ok) {
+        if (!response.ok && response.status !== 400) {
+            // Only throw for non-400 errors
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         return response.json();
     })
     .then(data => {
-        alert('Workflow cancelled');
+        // Handle any message from the server
+        if (data.status && (data.status === 'completed' || data.status === 'cancelled' || data.status === 'failed')) {
+            alert(`Workflow is already in ${data.status} state`);
+        } else {
+            alert('Workflow cancelled');
+        }
         location.reload();
     })
     .catch(error => {

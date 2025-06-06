@@ -151,10 +151,21 @@ async def cancel_workflow(workflow_id: int, db: AsyncSession = Depends(get_db)):
     workflow = result.scalar_one_or_none()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    if workflow.status != WorkflowStatus.RUNNING:
-        raise HTTPException(status_code=400, detail="Workflow is not running")
+    
+    # Check if workflow can be cancelled based on its status
+    if workflow.status == WorkflowStatus.COMPLETED or workflow.status == WorkflowStatus.CANCELLED or workflow.status == WorkflowStatus.FAILED:
+        # Already in a terminal state, just return success
+        return {"message": "Workflow is already in a completed state", "status": workflow.status}
+    
+    # Cancel only if there's a task_id to revoke
     if workflow.celery_task_id:
-        celery_app.control.revoke(workflow.celery_task_id, terminate=True)
+        try:
+            celery_app.control.revoke(workflow.celery_task_id, terminate=True)
+        except Exception as e:
+            # Log the error but continue with status change
+            print(f"Error revoking Celery task {workflow.celery_task_id}: {str(e)}")
+    
+    # Update status regardless of original status
     workflow.status = WorkflowStatus.CANCELLED
     await db.commit()
     return {"message": "Workflow cancelled"}
