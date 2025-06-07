@@ -81,6 +81,8 @@ services:
       - ./logs:/app/logs
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -136,6 +138,8 @@ services:
       - ./app:/app/app
       - task_venvs:/tmp/task_venvs
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
