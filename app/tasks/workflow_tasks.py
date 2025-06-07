@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
-from celery import current_task, chain
+
+from celery import chain
 from sqlalchemy.orm import Session
+
 from app.celery_app import celery_app
 from app.core.database import SessionLocal
 from app.models.workflow import Workflow, WorkflowStatus
@@ -11,529 +13,448 @@ from app.executors import ExecutorFactory
 from croniter import croniter
 import pytz
 
-# Import notification system
+# Notification system
 from app.notifications.tasks import trigger_notification
-from app.notifications.models import NotificationEvent, NotificationPriority
+from app.notifications.models import (
+    NotificationEvent,
+    NotificationPriority,
+)
 
+
+# --------------------------------------------------------------------------------------
+# WORKFLOW DRIVER
+# --------------------------------------------------------------------------------------
 
 @celery_app.task(bind=True)
 def execute_workflow(self, workflow_id: int):
-    """Execute a complete workflow"""
-    db = SessionLocal()
+    """Entry‑point task that spawns the task‑chain for a workflow."""
+    db: Session = SessionLocal()
     try:
-        workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        workflow: Workflow | None = (
+            db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        )
         if not workflow:
             raise ValueError(f"Workflow {workflow_id} not found")
-        
-        # Update workflow status
+
+        # ------------------------------------------------------------------
+        # Bootstrap bookkeeping
+        # ------------------------------------------------------------------
         workflow.status = WorkflowStatus.RUNNING
-        workflow.started_at = datetime.now()
+        workflow.started_at = datetime.utcnow()
         workflow.celery_task_id = self.request.id
         db.commit()
-        
-        # Send workflow started notification
-        try:
-            trigger_notification(
-                event=NotificationEvent.WORKFLOW_STARTED,
-                workflow_id=workflow.id,
-                workflow_name=workflow.name,
-                priority=NotificationPriority.NORMAL
-            )
-        except Exception as e:
-            print(f"Failed to send workflow started notification: {e}")
-        
-        # Get tasks ordered by execution order
-        tasks = db.query(Task).filter(Task.workflow_id == workflow_id).order_by(Task.order).all()
-        
+
+        _notify_workflow(
+            NotificationEvent.WORKFLOW_STARTED,
+            workflow,
+            NotificationPriority.NORMAL,
+        )
+
+        # ------------------------------------------------------------------
+        # Build execution chain
+        # ------------------------------------------------------------------
+        tasks: list[Task] = (
+            db.query(Task)
+            .filter(Task.workflow_id == workflow_id)
+            .order_by(Task.order)
+            .all()
+        )
         if not tasks:
-            # No tasks to execute, mark as completed
+            # Nothing to do
             workflow.status = WorkflowStatus.COMPLETED
             workflow.completed_at = datetime.utcnow()
             db.commit()
-            
-            # Send workflow completed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.WORKFLOW_COMPLETED,
-                    workflow_id=workflow.id,
-                    workflow_name=workflow.name,
-                    priority=NotificationPriority.NORMAL
-                )
-            except Exception as e:
-                print(f"Failed to send workflow completed notification: {e}")
-                
+            _notify_workflow(
+                NotificationEvent.WORKFLOW_COMPLETED,
+                workflow,
+                NotificationPriority.NORMAL,
+            )
             return {"status": "completed", "workflow_id": workflow_id}
-        
-        # Create a chain of tasks to execute sequentially
-        task_chain = []
-        for task in tasks:
-            task_chain.append(execute_task.s(task.id))
-        
-        # Add workflow completion task at the end
-        task_chain.append(complete_workflow.s(workflow_id))
-        
-        # Execute the chain
-        chain_result = chain(*task_chain).apply_async()
-        
-        # Update workflow with chain task ID for tracking
+
+        # Celery injects the previous result *before* the signature params.
+        # We therefore seed the first task with a dummy `None` so its
+        # positional layout is (previous_result, task_id).
+        task_sigs: list = []
+        for idx, t in enumerate(tasks):
+            if idx == 0:
+                task_sigs.append(execute_task.s(None, t.id))
+            else:
+                task_sigs.append(execute_task.s(t.id))
+
+        # Happy‑path chain – the last link marks completion
+        main_chain = chain(*task_sigs) | complete_workflow.s(workflow_id)
+
+        # Schedule, but also attach the same finaliser on error‑path
+        chain_result = main_chain.apply_async(
+            link_error=complete_workflow.s(workflow_id)
+        )
+
         workflow.celery_task_id = chain_result.id
         db.commit()
-        
-        return {"status": "started", "workflow_id": workflow_id, "chain_id": chain_result.id}
-        
-    except Exception as e:
-        if 'workflow' in locals():
+        return {
+            "status": "started",
+            "workflow_id": workflow_id,
+            "chain_id": chain_result.id,
+        }
+
+    except Exception as exc:
+        if "workflow" in locals():
             workflow.status = WorkflowStatus.FAILED
-            workflow.error_message = str(e)
+            workflow.error_message = str(exc)
             workflow.completed_at = datetime.utcnow()
             db.commit()
-            
-            # Send workflow failed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.WORKFLOW_FAILED,
-                    workflow_id=workflow.id,
-                    workflow_name=workflow.name,
-                    priority=NotificationPriority.HIGH,
-                    error_message=str(e)
-                )
-            except Exception as notification_error:
-                print(f"Failed to send workflow failed notification: {notification_error}")
+            _notify_workflow(
+                NotificationEvent.WORKFLOW_FAILED,
+                workflow,
+                NotificationPriority.HIGH,
+                error_message=str(exc),
+            )
         raise
     finally:
         db.close()
 
 
+# --------------------------------------------------------------------------------------
+# TASK EXECUTOR
+# --------------------------------------------------------------------------------------
+
 @celery_app.task(bind=True)
-def execute_task(self, task_id: int, executor_name: str = None, previous_result=None):
-    """Execute a single task using the specified executor"""
-    db = SessionLocal()
+def execute_task(
+    self,
+    previous_result: dict | None,
+    task_id: int,
+    executor_name: str = "virtualenv",
+):
+    """Execute a single Task model instance.
+
+    When called through a Celery `chain`, `previous_result` will contain the
+    return‑value of the upstream task.
+    """
+    db: Session = SessionLocal()
     executor = None
     try:
-        # Ensure task_id is an integer, not a complex object
-        if isinstance(task_id, dict):
-            # If task_id is accidentally a dictionary (from previous task result), extract the actual task_id
-            actual_task_id = task_id.get('task_id')
-            if actual_task_id is None:
-                raise ValueError(f"Invalid task_id parameter: {task_id}")
-            task_id = actual_task_id
-        
-        task = db.query(Task).filter(Task.id == task_id).first()
+        # ------------------------------------------------------------------
+        # Short‑circuit if upstream task failed
+        # ------------------------------------------------------------------
+        if previous_result and isinstance(previous_result, dict):
+            if previous_result.get("status") == "failed":
+                return _fail_immediately(
+                    db,
+                    task_id,
+                    f"Upstream task failed: {previous_result.get('error_message')}",
+                )
+
+        task: Task | None = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise ValueError(f"Task {task_id} not found")
 
-        workflow = db.query(Workflow).filter(Workflow.id == task.workflow_id).first()
+        workflow: Workflow | None = (
+            db.query(Workflow).filter(Workflow.id == task.workflow_id).first()
+        )
         workflow_name = workflow.name if workflow else f"Workflow {task.workflow_id}"
-        
-        # Check if previous task failed (when chaining)
-        if previous_result and isinstance(previous_result, dict):
-            if previous_result.get("status") == "failed":
-                # Previous task failed, mark this task as failed too
-                task.status = TaskStatus.FAILED
-                task.error_message = f"Previous task failed: {previous_result.get('error_message', 'Unknown error')}"
-                task.completed_at = datetime.utcnow()
-                db.commit()
-                
-                # Send task failed notification
-                try:
-                    trigger_notification(
-                        event=NotificationEvent.TASK_FAILED,
-                        workflow_id=task.workflow_id,
-                        workflow_name=workflow_name,
-                        task_id=task.id,
-                        task_name=task.name,
-                        priority=NotificationPriority.HIGH,
-                        error_message=task.error_message
-                    )
-                except Exception as e:
-                    print(f"Failed to send task failed notification: {e}")
-                
-                return {
-                    "status": "failed",
-                    "task_id": task_id,
-                    "error_message": task.error_message
-                }
-        
-        # Update task status
+
+        # Mark RUNNING
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.utcnow()
         task.celery_task_id = self.request.id
         db.commit()
-        
-        # Send task started notification
-        try:
-            trigger_notification(
-                event=NotificationEvent.TASK_STARTED,
-                workflow_id=task.workflow_id,
-                workflow_name=workflow_name,
-                task_id=task.id,
-                task_name=task.name,
-                priority=NotificationPriority.LOW
+        _notify_task(
+            NotificationEvent.TASK_STARTED,
+            task,
+            workflow_name,
+            NotificationPriority.LOW,
+        )
+
+        # Gather previous outputs for pipeline
+        prev_tasks = (
+            db.query(Task)
+            .filter(
+                Task.workflow_id == task.workflow_id,
+                Task.order < task.order,
+                Task.status == TaskStatus.COMPLETED,
             )
-        except Exception as e:
-            print(f"Failed to send task started notification: {e}")
-        
-        # Get previous tasks' outputs for data pipeline
-        previous_tasks = db.query(Task).filter(
-            Task.workflow_id == task.workflow_id,
-            Task.order < task.order,
-            Task.status == TaskStatus.COMPLETED
-        ).order_by(Task.order).all()
-        
-        # Create executor with proper error handling and fallback
-        # Override executor_name to always use virtualenv as requested
-        executor_name = "virtualenv"
-        
-        # Debug logging for executor selection
-        print(f"Using executor: {executor_name}")
-        
-        # Check if the executor is available
-        available_executors = ExecutorFactory.list_executors()
-        if executor_name not in available_executors:
-            raise RuntimeError(f"The virtualenv executor is not available. Available executors: {available_executors}")
-        
-        try:
-            executor = ExecutorFactory.create_executor(executor_name)
-        except Exception as e:
-            print(f"Failed to create executor '{executor_name}': {e}")
-            raise RuntimeError(f"Failed to create virtualenv executor: {e}")
-        
-        # Execute task with previous outputs available
-        try:
-            result = executor.execute(
-                script_content=task.script_content,
-                requirements=task.requirements or [],
-                timeout=settings.TASK_TIMEOUT,
-                previous_outputs=[{
-                    'task_name': prev_task.name,
-                    'task_order': prev_task.order,
-                    'outputs': prev_task.task_outputs or {},
-                    'raw_output': prev_task.output
-                } for prev_task in previous_tasks]
-            )
-        except Exception as e:
-            error_message = str(e)
-            if "Failed to establish a new connection" in error_message or "Temporary failure in name resolution" in error_message:
-                error_message = f"Network connectivity error installing packages. Please check your internet connection: {error_message}"
-            raise RuntimeError(error_message)
-        
-        # Update task with results
+            .order_by(Task.order)
+            .all()
+        )
+
+        previous_outputs = [
+            {
+                "task_name": pt.name,
+                "task_order": pt.order,
+                "outputs": pt.task_outputs or {},
+                "raw_output": pt.output,
+            }
+            for pt in prev_tasks
+        ]
+
+        # Always use the virtualenv executor
+        executor = ExecutorFactory.create_executor("virtualenv")
+        result = executor.execute(
+            script_content=task.script_content,
+            requirements=task.requirements or [],
+            timeout=settings.TASK_TIMEOUT,
+            previous_outputs=previous_outputs,
+        )
+
+        # ------------------------------------------------------------------
+        # Persist outcome
+        # ------------------------------------------------------------------
+        task.completed_at = datetime.utcnow()
         if result.success:
             task.status = TaskStatus.COMPLETED
             task.output = result.output
-            # Extract structured outputs from task result
-            task.task_outputs = getattr(result, 'task_outputs', {})
-            
-            # Send task completed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.TASK_COMPLETED,
-                    workflow_id=task.workflow_id,
-                    workflow_name=workflow_name,
-                    task_id=task.id,
-                    task_name=task.name,
-                    priority=NotificationPriority.NORMAL,
-                    metadata={
-                        'execution_time': result.execution_time,
-                        'output_size': len(str(result.output)) if result.output else 0
-                    }
-                )
-            except Exception as e:
-                print(f"Failed to send task completed notification: {e}")
+            task.task_outputs = getattr(result, "task_outputs", {})
+            db.commit()
+            _notify_task(
+                NotificationEvent.TASK_COMPLETED,
+                task,
+                workflow_name,
+                NotificationPriority.NORMAL,
+                metadata={
+                    "execution_time": result.execution_time,
+                    "output_size": len(result.output or ""),
+                },
+            )
+            return {
+                "status": "completed",
+                "task_id": task_id,
+                "output": result.output,
+                "execution_time": result.execution_time,
+                "task_outputs": task.task_outputs,
+            }
         else:
             task.status = TaskStatus.FAILED
             task.error_message = result.error_message
             task.output = result.output
-            
-            # Send task failed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.TASK_FAILED,
-                    workflow_id=task.workflow_id,
-                    workflow_name=workflow_name,
-                    task_id=task.id,
-                    task_name=task.name,
-                    priority=NotificationPriority.HIGH,
-                    error_message=result.error_message,
-                    metadata={
-                        'execution_time': result.execution_time
-                    }
-                )
-            except Exception as e:
-                print(f"Failed to send task failed notification: {e}")
-        
-        task.completed_at = datetime.utcnow()
-        db.commit()
-        
-        return {
-            "status": "completed" if result.success else "failed",
-            "task_id": task_id,
-            "output": result.output,
-            "error_message": result.error_message,
-            "execution_time": result.execution_time,
-            "task_outputs": task.task_outputs
-        }
-    except Exception as e:
-        if 'task' in locals():
-            task.status = TaskStatus.FAILED
-            task.error_message = str(e)
-            task.completed_at = datetime.utcnow()
             db.commit()
-            
-            # Send task failed notification
-            try:
-                workflow = db.query(Workflow).filter(Workflow.id == task.workflow_id).first()
-                workflow_name = workflow.name if workflow else f"Workflow {task.workflow_id}"
-                
-                trigger_notification(
-                    event=NotificationEvent.TASK_FAILED,
-                    workflow_id=task.workflow_id,
-                    workflow_name=workflow_name,
-                    task_id=task.id,
-                    task_name=task.name,
-                    priority=NotificationPriority.HIGH,
-                    error_message=str(e)
-                )
-            except Exception as notification_error:
-                print(f"Failed to send task failed notification: {notification_error}")
-                
-        return {
-            "status": "failed",
-            "task_id": task_id,
-            "error_message": str(e)
-        }
+            _notify_task(
+                NotificationEvent.TASK_FAILED,
+                task,
+                workflow_name,
+                NotificationPriority.HIGH,
+                error_message=result.error_message,
+                metadata={"execution_time": result.execution_time},
+            )
+            return {
+                "status": "failed",
+                "task_id": task_id,
+                "error_message": result.error_message,
+            }
+
+    except Exception as exc:
+        return _fail_immediately(db, task_id, str(exc))
     finally:
         if executor:
             executor.cleanup()
         db.close()
 
 
-@celery_app.task
-def complete_workflow(previous_result, workflow_id: int):
-    """Complete a workflow after all tasks are done"""
-    db = SessionLocal()
+# --------------------------------------------------------------------------------------
+# FINALISE WORKFLOW
+# --------------------------------------------------------------------------------------
+
+@celery_app.task(bind=True)
+def complete_workflow(self, previous_result, workflow_id: int):
+    """Mark the workflow as COMPLETED or FAILED once all tasks end."""
+    db: Session = SessionLocal()
     try:
-        workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        workflow: Workflow | None = (
+            db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        )
         if not workflow:
             return {"status": "error", "message": f"Workflow {workflow_id} not found"}
-        
-        # Check if the last task failed
-        if isinstance(previous_result, dict) and previous_result.get("status") == "failed":
-            workflow.status = WorkflowStatus.FAILED
-            workflow.error_message = f"Task execution failed: {previous_result.get('error_message', 'Unknown error')}"
-            
-            # Send workflow failed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.WORKFLOW_FAILED,
-                    workflow_id=workflow.id,
-                    workflow_name=workflow.name,
-                    priority=NotificationPriority.HIGH,
-                    error_message=workflow.error_message
-                )
-            except Exception as e:
-                print(f"Failed to send workflow failed notification: {e}")
+
+        # Quick exit if already FINAL
+        if workflow.status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED):
+            return {"status": workflow.status.value, "workflow_id": workflow_id}
+
+        # If previous_result contains a failure bubble up
+        if previous_result and isinstance(previous_result, dict):
+            if previous_result.get("status") == "failed":
+                workflow.status = WorkflowStatus.FAILED
+                workflow.error_message = previous_result.get("error_message")
         else:
-            # Check if any task in the workflow failed
-            failed_tasks = db.query(Task).filter(
-                Task.workflow_id == workflow_id,
-                Task.status == TaskStatus.FAILED
-            ).first()
-            
-            if failed_tasks:
+            # Inspect children states
+            tasks = db.query(Task).filter(Task.workflow_id == workflow_id).all()
+            if any(t.status == TaskStatus.FAILED for t in tasks):
                 workflow.status = WorkflowStatus.FAILED
                 workflow.error_message = "One or more tasks failed"
-                
-                # Send workflow failed notification
-                try:
-                    trigger_notification(
-                        event=NotificationEvent.WORKFLOW_FAILED,
-                        workflow_id=workflow.id,
-                        workflow_name=workflow.name,
-                        priority=NotificationPriority.HIGH,
-                        error_message=workflow.error_message
-                    )
-                except Exception as e:
-                    print(f"Failed to send workflow failed notification: {e}")
-            else:
+            elif all(t.status == TaskStatus.COMPLETED for t in tasks):
                 workflow.status = WorkflowStatus.COMPLETED
-                
-                # Send workflow completed notification
-                try:
-                    # Get workflow statistics for metadata
-                    total_tasks = db.query(Task).filter(Task.workflow_id == workflow_id).count()
-                    completed_tasks = db.query(Task).filter(
-                        Task.workflow_id == workflow_id,
-                        Task.status == TaskStatus.COMPLETED
-                    ).count()
-                    
-                    execution_time = None
-                    if workflow.started_at:
-                        execution_time = (datetime.utcnow() - workflow.started_at).total_seconds()
-                    
-                    trigger_notification(
-                        event=NotificationEvent.WORKFLOW_COMPLETED,
-                        workflow_id=workflow.id,
-                        workflow_name=workflow.name,
-                        priority=NotificationPriority.NORMAL,
-                        metadata={
-                            'total_tasks': total_tasks,
-                            'completed_tasks': completed_tasks,
-                            'execution_time_seconds': execution_time
-                        }
-                    )
-                except Exception as e:
-                    print(f"Failed to send workflow completed notification: {e}")
-        
+
         workflow.completed_at = datetime.utcnow()
         db.commit()
-        
-        return {
-            "status": workflow.status.value,
-            "workflow_id": workflow_id,
-            "completed_at": workflow.completed_at.isoformat()
-        }
-        
-    except Exception as e:
-        if 'workflow' in locals():
-            workflow.status = WorkflowStatus.FAILED
-            workflow.error_message = str(e)
-            workflow.completed_at = datetime.utcnow()
-            db.commit()
-            
-            # Send workflow failed notification
-            try:
-                trigger_notification(
-                    event=NotificationEvent.WORKFLOW_FAILED,
-                    workflow_id=workflow.id,
-                    workflow_name=workflow.name,
-                    priority=NotificationPriority.HIGH,
-                    error_message=str(e)
-                )
-            except Exception as notification_error:
-                print(f"Failed to send workflow failed notification: {notification_error}")
-                
-        return {"status": "error", "message": str(e)}
+
+        if workflow.status == WorkflowStatus.COMPLETED:
+            _notify_workflow(
+                NotificationEvent.WORKFLOW_COMPLETED,
+                workflow,
+                NotificationPriority.NORMAL,
+                metadata={"total_tasks": len(tasks)},
+            )
+        else:
+            _notify_workflow(
+                NotificationEvent.WORKFLOW_FAILED,
+                workflow,
+                NotificationPriority.HIGH,
+                error_message=workflow.error_message,
+            )
+
+        return {"status": workflow.status.value, "workflow_id": workflow_id}
+
     finally:
         db.close()
 
 
+# --------------------------------------------------------------------------------------
+# SCHEDULING / HOUSEKEEPING (unchanged)
+# --------------------------------------------------------------------------------------
+
 @celery_app.task
 def execute_scheduled_workflow(workflow_id: int):
-    """Execute a scheduled workflow and update scheduling metadata"""
+    """Kick‑off a scheduled workflow and compute next_run_at."""
     db = SessionLocal()
     try:
         workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if not workflow:
-            return {"status": "error", "message": f"Workflow {workflow_id} not found"}
-        
-        if not workflow.is_scheduled:
-            return {"status": "skipped", "message": "Workflow is not scheduled"}
-        
-        # Update run tracking
+        if not workflow or not workflow.is_scheduled:
+            return {"status": "skipped", "workflow_id": workflow_id}
+
         workflow.run_count += 1
         workflow.last_run_at = datetime.utcnow()
-        
-        # Calculate next run time
         try:
             tz = pytz.timezone(workflow.timezone)
             cron = croniter(workflow.cron_expression, datetime.now(tz))
             workflow.next_run_at = cron.get_next(datetime)
         except Exception as e:
-            print(f"Error calculating next run time: {e}")
-        
+            print(f"Failed to compute next run: {e}")
         db.commit()
-        
-        # Send workflow scheduled notification
-        try:
-            trigger_notification(
-                event=NotificationEvent.WORKFLOW_SCHEDULED,
-                workflow_id=workflow.id,
-                workflow_name=workflow.name,
-                priority=NotificationPriority.LOW,
-                metadata={
-                    'run_count': workflow.run_count,
-                    'cron_expression': workflow.cron_expression,
-                    'next_run_at': workflow.next_run_at.isoformat() if workflow.next_run_at else None
-                }
-            )
-        except Exception as e:
-            print(f"Failed to send workflow scheduled notification: {e}")
-        
-        # Execute the workflow
+
+        _notify_workflow(
+            NotificationEvent.WORKFLOW_SCHEDULED,
+            workflow,
+            NotificationPriority.LOW,
+            metadata={
+                "run_count": workflow.run_count,
+                "next_run_at": workflow.next_run_at.isoformat()
+                if workflow.next_run_at
+                else None,
+            },
+        )
         execute_workflow.delay(workflow_id)
-        
-        return {
-            "status": "started",
-            "workflow_id": workflow_id,
-            "run_count": workflow.run_count
-        }
-        
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "started", "workflow_id": workflow_id}
     finally:
         db.close()
 
 
 @celery_app.task
 def check_and_execute_scheduled_workflows():
-    """Check for scheduled workflows that are due to run and execute them"""
+    """Find due workflows and queue them."""
     db = SessionLocal()
     try:
         now = datetime.utcnow()
-        
-        # Find workflows that are scheduled and due to run
-        due_workflows = db.query(Workflow).filter(
-            Workflow.is_scheduled == True,
-            Workflow.next_run_at <= now,
-            Workflow.status.in_([WorkflowStatus.PENDING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED])
-        ).all()
-        
-        executed_count = 0
-        for workflow in due_workflows:
-            try:
-                # Execute the scheduled workflow
-                execute_scheduled_workflow.delay(workflow.id)
-                executed_count += 1
-            except Exception as e:
-                print(f"Error scheduling workflow {workflow.id}: {e}")
-        
-        return {
-            "status": "completed",
-            "checked_at": now.isoformat(),
-            "executed_count": executed_count
-        }
-        
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        recent_cutoff = now - timedelta(minutes=5)
+
+        due = (
+            db.query(Workflow)
+            .filter(
+                Workflow.is_scheduled.is_(True),
+                Workflow.next_run_at <= now,
+                Workflow.status.in_(
+                    [WorkflowStatus.PENDING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED]
+                ),
+            )
+            .all()
+        )
+        executed = 0
+        for wf in due:
+            if wf.status == WorkflowStatus.RUNNING:
+                continue
+            execute_scheduled_workflow.delay(wf.id)
+            executed += 1
+        return {"status": "completed", "executed": executed}
     finally:
         db.close()
 
 
 @celery_app.task
 def cleanup_old_tasks():
-    """Clean up old completed/failed tasks and workflows"""
+    """Purge historical data to keep the DB small."""
     db = SessionLocal()
     try:
-        cutoff_date = datetime.utcnow() - timedelta(days=settings.CLEANUP_DAYS)
-        
-        old_tasks = db.query(Task).filter(
-            Task.completed_at < cutoff_date,
-            Task.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED])
-        ).all()
-        
-        for task in old_tasks:
-            db.delete(task)
-        
-        old_workflows = db.query(Workflow).filter(
-            Workflow.completed_at < cutoff_date,
-            Workflow.status.in_([WorkflowStatus.COMPLETED, WorkflowStatus.FAILED])
-        ).all()
-        
-        for workflow in old_workflows:
-            db.delete(workflow)
-        
+        cutoff = datetime.utcnow() - timedelta(days=settings.CLEANUP_DAYS)
+        old_tasks = (
+            db.query(Task)
+            .filter(
+                Task.completed_at < cutoff,
+                Task.status.in_([TaskStatus.COMPLETED, TaskStatus.FAILED]),
+            )
+            .all()
+        )
+        for t in old_tasks:
+            db.delete(t)
+        old_wfs = (
+            db.query(Workflow)
+            .filter(
+                Workflow.completed_at < cutoff,
+                Workflow.status.in_([WorkflowStatus.COMPLETED, WorkflowStatus.FAILED]),
+            )
+            .all()
+        )
+        for wf in old_wfs:
+            db.delete(wf)
         db.commit()
-        return f"Cleaned up {len(old_tasks)} tasks and {len(old_workflows)} workflows"
+        return f"Cleaned {len(old_tasks)} tasks, {len(old_wfs)} workflows"
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------------------
+# HELPER UTILITIES
+# --------------------------------------------------------------------------------------
+
+def _notify_workflow(event: NotificationEvent, workflow: Workflow, priority: NotificationPriority, **extra):
+    try:
+        trigger_notification(
+            event=event,
+            workflow_id=workflow.id,
+            workflow_name=workflow.name,
+            priority=priority,
+            **extra,
+        )
+    except Exception as e:
+        print(f"Notification error ({event}): {e}")
+
+
+def _notify_task(event: NotificationEvent, task: Task, workflow_name: str, priority: NotificationPriority, **extra):
+    try:
+        trigger_notification(
+            event=event,
+            workflow_id=task.workflow_id,
+            workflow_name=workflow_name,
+            task_id=task.id,
+            task_name=task.name,
+            priority=priority,
+            **extra,
+        )
+    except Exception as e:
+        print(f"Notification error ({event}): {e}")
+
+
+def _fail_immediately(db: Session, task_id: int, message: str):
+    """Utility to mark a task FAILED when we cannot proceed."""
+    task: Task | None = db.query(Task).filter(Task.id == task_id).first()
+    if task:
+        task.status = TaskStatus.FAILED
+        task.error_message = message
+        task.completed_at = datetime.utcnow()
+        db.commit()
+        workflow = db.query(Workflow).filter(Workflow.id == task.workflow_id).first()
+        workflow_name = workflow.name if workflow else f"Workflow {task.workflow_id}"
+        _notify_task(
+            NotificationEvent.TASK_FAILED,
+            task,
+            workflow_name,
+            NotificationPriority.HIGH,
+            error_message=message,
+        )
+    return {"status": "failed", "task_id": task_id, "error_message": message}
