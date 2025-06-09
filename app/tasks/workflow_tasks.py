@@ -268,19 +268,29 @@ def complete_workflow(self, previous_result, workflow_id: int):
         if workflow.status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED):
             return {"status": workflow.status.value, "workflow_id": workflow_id}
 
-        # If previous_result contains a failure bubble up
+        # Get all tasks for this workflow
+        tasks = db.query(Task).filter(Task.workflow_id == workflow_id).all()
+        
+        # Determine final status based on task states
         if previous_result and isinstance(previous_result, dict):
             if previous_result.get("status") == "failed":
                 workflow.status = WorkflowStatus.FAILED
                 workflow.error_message = previous_result.get("error_message")
+            elif previous_result.get("status") == "completed":
+                # Check if all tasks are completed
+                if all(t.status == TaskStatus.COMPLETED for t in tasks):
+                    workflow.status = WorkflowStatus.COMPLETED
+                elif any(t.status == TaskStatus.FAILED for t in tasks):
+                    workflow.status = WorkflowStatus.FAILED
+                    workflow.error_message = "One or more tasks failed"
         else:
-            # Inspect children states
-            tasks = db.query(Task).filter(Task.workflow_id == workflow_id).all()
+            # Inspect children states directly
             if any(t.status == TaskStatus.FAILED for t in tasks):
                 workflow.status = WorkflowStatus.FAILED
                 workflow.error_message = "One or more tasks failed"
             elif all(t.status == TaskStatus.COMPLETED for t in tasks):
                 workflow.status = WorkflowStatus.COMPLETED
+            # If tasks are still running/pending, don't change status
 
         workflow.completed_at = datetime.utcnow()
         db.commit()
@@ -292,7 +302,7 @@ def complete_workflow(self, previous_result, workflow_id: int):
                 NotificationPriority.NORMAL,
                 metadata={"total_tasks": len(tasks)},
             )
-        else:
+        elif workflow.status == WorkflowStatus.FAILED:
             _notify_workflow(
                 NotificationEvent.WORKFLOW_FAILED,
                 workflow,
@@ -321,12 +331,23 @@ def execute_scheduled_workflow(workflow_id: int):
 
         workflow.run_count += 1
         workflow.last_run_at = datetime.utcnow()
+        
+        # Fix: Properly calculate next run time with timezone handling
         try:
             tz = pytz.timezone(workflow.timezone)
-            cron = croniter(workflow.cron_expression, datetime.now(tz))
-            workflow.next_run_at = cron.get_next(datetime)
+            # Use current time in the workflow's timezone as base
+            current_time_tz = datetime.now(tz)
+            # Create croniter with timezone-aware current time
+            cron = croniter(workflow.cron_expression, current_time_tz)
+            # Get next run time in the workflow's timezone
+            next_run_tz = cron.get_next(datetime)
+            # Convert to UTC for storage (consistent with other datetime fields)
+            workflow.next_run_at = next_run_tz.astimezone(pytz.UTC).replace(tzinfo=None)
         except Exception as e:
-            print(f"Failed to compute next run: {e}")
+            print(f"Failed to compute next run for workflow {workflow_id}: {e}")
+            # Fallback: set next run to 1 hour from now if calculation fails
+            workflow.next_run_at = datetime.utcnow() + timedelta(hours=1)
+        
         db.commit()
 
         _notify_workflow(

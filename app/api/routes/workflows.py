@@ -245,14 +245,20 @@ async def schedule_workflow(
         import pytz
         
         tz = pytz.timezone(timezone)
-        cron = croniter(cron_expression, datetime.now(tz))
-        next_run = cron.get_next(datetime)
+        # Use current time in the workflow's timezone as base
+        current_time_tz = datetime.now(tz)
+        # Create croniter with timezone-aware current time
+        cron = croniter(cron_expression, current_time_tz)
+        # Get next run time in the workflow's timezone
+        next_run_tz = cron.get_next(datetime)
+        # Convert to UTC for storage (consistent with other datetime fields)
+        next_run_utc = next_run_tz.astimezone(pytz.UTC).replace(tzinfo=None)
         
         # Update workflow with scheduling info
         workflow.is_scheduled = True
         workflow.cron_expression = cron_expression
         workflow.timezone = timezone
-        workflow.next_run_at = next_run
+        workflow.next_run_at = next_run_utc
         
         await db.commit()
         
@@ -263,7 +269,7 @@ async def schedule_workflow(
             "message": "Workflow scheduled successfully",
             "cron_expression": cron_expression,
             "timezone": timezone,
-            "next_run_at": next_run
+            "next_run_at": next_run_utc
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid cron expression or timezone: {str(e)}")
